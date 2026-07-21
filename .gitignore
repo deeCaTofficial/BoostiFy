@@ -1,0 +1,158 @@
+# ===================================================================
+# C# / .NET - Специфичные файлы (Visual Studio, Rider, .NET CLI)
+# ===================================================================
+
+# Папки с результатами сборки
+[Bb]in/
+[Oo]bj/
+
+# Пользовательские настройки Visual Studio и кэши
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Файлы Resharper / Rider
+_ReSharper.*
+*.[Rr]esharper
+_Rider.*
+*.[Rr]ider
+
+# Пакеты NuGet (для старых форматов)
+packages/
+*.nupkg
+
+# Папка для публикации
+[Pp]ublish/
+
+# Результаты тестов
+[Tt]est[Rr]esult*/
+[Tt]est[Rr]esults/
+
+# Сгенерированные файлы Visual Studio
+Generated\ Files/
+
+# Файлы логов
+*.log
+*.log.*
+*.tlog
+BoostiFy/upload/gui_debug_log.txt
+BoostiFy/upload/config.json
+BoostiFy/upload/*cache*.json
+BoostiFy/upload/games_upload.json
+BoostiFy/upload/user_games.json
+BoostiFy/upload/black_list.json
+BoostiFy/upload/white_list.json
+BoostiFy/upload/configs/
+
+# ===================================================================
+# Python - Специфичные файлы
+# ===================================================================
+
+# Кэш байт-кода и скомпилированные файлы
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Виртуальные окружения
+# Если вы называете их по-другому, добавьте сюда свои имена
+venv/
+.venv/
+env/
+.env/
+env.bak/
+venv.bak/
+
+# Дистрибутивы и файлы сборки
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Готовый релизный EXE хранится в репозитории вместе с исходниками.
+!dist/
+dist/*
+!dist/BoostiFy.exe
+
+# Файлы Jupyter Notebook
+.ipynb_checkpoints
+
+# Файлы тестов
+.pytest_cache/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+
+# Sphinx (документация)
+docs/_build/
+
+# ===================================================================
+# Файлы IDE и редакторов кода (VS Code, PyCharm и др.)
+# ===================================================================
+
+# JetBrains (PyCharm, Rider)
+.idea/
+# Раскомментируйте, если хотите делиться настройками запуска с командой
+#!.idea/runConfigurations/
+
+# VS Code
+.vscode/
+# Раскомментируйте, если хотите делиться настройками запуска и расширениями
+#!.vscode/launch.json
+#!.vscode/tasks.json
+#!.vscode/settings.json
+#!.vscode/extensions.json
+
+# ===================================================================
+# Конфиденциальные данные и локальные настройки
+# ВАЖНО: Никогда не добавляйте в Git файлы с ключами, паролями и т.д.
+# ===================================================================
+*.env
+.env.*
+!.env.example
+!.env.template
+
+# Файлы с секретами
+secrets.py
+secrets.json
+credentials.json
+*.key
+*.pem
+
+# ===================================================================
+# Общие системные файлы
+# ===================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ===================================================================
+# Локальный мусор, не относящийся к проекту
+# (напр. случайно попавшие сюда бэкапы приложений)
+# ===================================================================
+diagnostics/
+
+# Локальная корзина: структура хранится, содержимое не попадает в Git.
+Garbage/*
+!Garbage/README.md

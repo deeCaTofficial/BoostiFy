@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <RootNamespace>Boostify.Runtime.Steam</RootNamespace>
+    <AssemblyName>Boostify.Runtime.Steam</AssemblyName>
+    <Product>BoostiFy</Product>
+    <Company>CLC corporation</Company>
+    <Authors>deeCaT</Authors>
+    <Copyright>Copyright © 2026 deeCaT / CLC corporation</Copyright>
+    <Description>Steam integration runtime for the BoostiFy desktop application.</Description>
+    <RepositoryUrl>https://github.com/deeCaTofficial/BoostiFy</RepositoryUrl>
+    <RepositoryType>Git</RepositoryType>
+    <PlatformTarget>$(Platform)</PlatformTarget>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="SteamAccessException.cs" />
+    <Compile Include="SteamSession.cs" />
+    <Compile Include="Features\Achievements.cs" />
+    <Compile Include="Features\AppOwnership.cs" />
+    <Compile Include="Interop\SteamClientConnection.cs" />
+    <Compile Include="Interop\SteamClientLibrary.cs" />
+    <Compile Include="Interop\VTableBinding.cs" />
+    <Compile Include="Schemas\AchievementCatalog.cs" />
+    <Compile Include="Schemas\BinaryKvReader.cs" />
+    <Compile Include="Schemas\KvNode.cs" />
+  </ItemGroup>
+</Project>

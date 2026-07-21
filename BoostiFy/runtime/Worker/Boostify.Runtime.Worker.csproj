@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <RootNamespace>Boostify.Runtime.Worker</RootNamespace>
+    <AssemblyName>Boostify.Worker</AssemblyName>
+    <Product>BoostiFy</Product>
+    <Company>CLC corporation</Company>
+    <Authors>deeCaT</Authors>
+    <Copyright>Copyright © 2026 deeCaT / CLC corporation</Copyright>
+    <Description>Steam worker runtime for the BoostiFy desktop application.</Description>
+    <RepositoryUrl>https://github.com/deeCaTofficial/BoostiFy</RepositoryUrl>
+    <RepositoryType>Git</RepositoryType>
+    <Version>1.0.0</Version>
+    <ApplicationIcon>boostify.ico</ApplicationIcon>
+    <StartupObject />
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <PlatformTarget>$(Platform)</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'ReleaseNoConsole'">
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Boostify.Booster</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AchievementWorkflow.cs" />
+    <Compile Include="BoostSession.cs" />
+    <Compile Include="MemoryTrimmer.cs" />
+    <Compile Include="OwnershipProtocol.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="RuntimeDiagnostics.cs" />
+    <Compile Include="WorkerLog.cs" />
+    <Compile Include="WorkerOptions.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Steam\Boostify.Runtime.Steam.csproj" />
+  </ItemGroup>
+
+</Project>
