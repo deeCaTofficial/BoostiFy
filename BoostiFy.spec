@@ -18,6 +18,7 @@ runtime_files = [
     "Boostify.Runtime.Steam.dll",
 ]
 datas = [
+    (str(root / "LICENSE"), "."),
     (str(root / "BoostiFy" / "Assets" / "BoostiFy.png"), "BoostiFy/Assets"),
     (str(root / "BoostiFy" / "Assets" / "BoostiFyLogo.png"), "BoostiFy/Assets"),
 ]

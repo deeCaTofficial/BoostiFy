@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/deeCaTofficial/BoostiFy/actions/workflows/ci.yml"><img src="https://github.com/deeCaTofficial/BoostiFy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/deeCaTofficial/BoostiFy/releases"><img src="https://img.shields.io/github/downloads/deeCaTofficial/BoostiFy/total?label=downloads&color=brightgreen" alt="Downloads"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F7DF1E" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows" alt="Windows">
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/GUI-PyQt6-41CD52?logo=qt&logoColor=white" alt="PyQt6">
@@ -78,6 +79,12 @@ Steam. Интерфейс остаётся отзывчивым, тяжёлые 
 
 Если ошибка связана со Steam runtime, приложите версии Windows и Steam, AppID,
 последние строки лога и укажите, воспроизводится ли проблема в `--self-test`.
+
+## 📄 Лицензия
+
+BoostiFy распространяется по лицензии **MIT**. Вы можете использовать, изменять и
+распространять проект при условии сохранения уведомления об авторских правах и
+текста лицензии. Подробности приведены в файле [LICENSE](./LICENSE).
 
 ---
 

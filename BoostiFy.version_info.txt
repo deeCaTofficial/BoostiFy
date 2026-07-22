@@ -18,7 +18,7 @@ VSVersionInfo(
           StringStruct('FileDescription', 'BoostiFy desktop application'),
           StringStruct('FileVersion', '1.0.0'),
           StringStruct('InternalName', 'BoostiFy'),
-          StringStruct('LegalCopyright', 'Copyright © 2026 deeCaT / CLC corporation'),
+          StringStruct('LegalCopyright', 'Copyright (c) 2025-2026 deeCaT / CLC corporation'),
           StringStruct('OriginalFilename', 'BoostiFy.exe'),
           StringStruct('ProductName', 'BoostiFy'),
           StringStruct('ProductVersion', '1.0.0')
