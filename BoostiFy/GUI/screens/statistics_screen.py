@@ -5,13 +5,24 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath
 from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
 from BoostiFy.GUI.core.statistics_storage import classify_game_statuses
-from BoostiFy.GUI.utils.styles import ACTIVE_COLOR, ELEMENT_BG_COLOR, FONT_FAMILY, TEXT_COLOR
-
+from BoostiFy.GUI.utils.styles import (
+    ACTIVE_COLOR,
+    BUTTON_STYLE,
+    ELEMENT_BG_COLOR,
+    FONT_FAMILY,
+    TEXT_COLOR,
+)
 
 SUCCESS_COLOR = "#41c98d"
 ERROR_COLOR = "#ff6b6b"
 SKIPPED_COLOR = "#f5b84b"
 IDLE_COLOR = "#465362"
+MUTED_COLOR = "#8b98a5"
+TRACK_COLOR = "#202832"
+
+# Тот же визуальный язык, что и у остальных вкладок: плашка ELEMENT_BG_COLOR,
+# скругление 10px, Segoe UI. Держим мало типоразмеров шрифта — так экран перестаёт
+# «частить» на фоне спокойных вкладок с крупными кнопками.
 CARD_STYLE = f"""
     QFrame#statisticsCard, QFrame#statisticsPanel {{
         background-color: {ELEMENT_BG_COLOR};
@@ -19,37 +30,14 @@ CARD_STYLE = f"""
         border-radius: 10px;
     }}
 """
-SMALL_LABEL_STYLE = f"""
-    color: #9eabb8;
-    background: transparent;
-    font-family: '{FONT_FAMILY}';
-    font-size: 12px;
-    font-weight: 600;
-"""
-BODY_LABEL_STYLE = f"""
-    color: {TEXT_COLOR};
-    background: transparent;
-    font-family: '{FONT_FAMILY}';
-    font-size: 14px;
-"""
-ACTION_BUTTON_STYLE = f"""
-    QPushButton {{
-        color: {TEXT_COLOR};
-        background-color: {ELEMENT_BG_COLOR};
-        border: none;
-        border-radius: 10px;
-        font-family: '{FONT_FAMILY}';
-        font-size: 15px;
-    }}
-    QPushButton:hover {{
-        color: {ACTIVE_COLOR};
-        background-color: #313d4a;
-    }}
-    QPushButton:pressed {{
-        color: white;
-        background-color: {ACTIVE_COLOR};
-    }}
-"""
+CAPTION_STYLE = (
+    f"color: {MUTED_COLOR}; background: transparent; "
+    f"font-family: '{FONT_FAMILY}'; font-size: 14px; font-weight: 600;"
+)
+BODY_STYLE = (
+    f"color: {TEXT_COLOR}; background: transparent; "
+    f"font-family: '{FONT_FAMILY}'; font-size: 15px;"
+)
 
 
 def _number(value):
@@ -86,7 +74,7 @@ class StatusDistributionBar(QWidget):
         rect = self.rect()
         path = QPainterPath()
         path.addRoundedRect(rect.x(), rect.y(), rect.width(), rect.height(), 7, 7)
-        painter.fillPath(path, QColor("#202832"))
+        painter.fillPath(path, QColor(TRACK_COLOR))
         total = sum(self.counts)
         if total <= 0:
             return
@@ -103,28 +91,25 @@ class StatusDistributionBar(QWidget):
 
 
 class StatisticsCard(QFrame):
+    """Плитка-показатель: подпись сверху, крупное число снизу. Без мелкой третьей
+    строки — она добавляла шума, а суть метрики уже в подписи."""
+
     def __init__(self, caption, accent=ACTIVE_COLOR, parent=None):
         super().__init__(parent)
         self.setObjectName("statisticsCard")
         self.setStyleSheet(CARD_STYLE)
-        self.caption_label = QLabel(caption.upper(), self)
-        self.caption_label.setGeometry(12, 8, 116, 18)
-        self.caption_label.setStyleSheet(SMALL_LABEL_STYLE)
+        self.caption_label = QLabel(caption, self)
+        self.caption_label.setGeometry(16, 16, 108, 18)
+        self.caption_label.setStyleSheet(CAPTION_STYLE)
         self.value_label = QLabel("0", self)
-        self.value_label.setGeometry(12, 27, 116, 34)
+        self.value_label.setGeometry(16, 40, 108, 40)
         self.value_label.setStyleSheet(
             f"color: {accent}; background: transparent; font-family: '{FONT_FAMILY}'; "
-            "font-size: 26px; font-weight: 700;"
-        )
-        self.detail_label = QLabel("—", self)
-        self.detail_label.setGeometry(12, 63, 116, 17)
-        self.detail_label.setStyleSheet(
-            f"color: #9eabb8; background: transparent; font-family: '{FONT_FAMILY}'; font-size: 11px;"
+            "font-size: 30px; font-weight: 700;"
         )
 
-    def set_value(self, value, detail):
+    def set_value(self, value):
         self.value_label.setText(str(value))
-        self.detail_label.setText(str(detail))
 
 
 class StatisticsPanel(QWidget):
@@ -135,81 +120,76 @@ class StatisticsPanel(QWidget):
         super().__init__(parent)
         self.snapshot = {}
 
-        self.title_label = QLabel("Обзор активности", self)
-        self.title_label.setGeometry(0, 0, 340, 45)
-        self.title_label.setStyleSheet(
-            f"color: {TEXT_COLOR}; background: transparent; font-family: '{FONT_FAMILY}'; "
-            "font-size: 23px; font-weight: 700;"
-        )
-
+        # Заголовок «Обзор активности» убран намеренно: раздел уже подписан в левой
+        # навигации («Статистика»), а внутренний дубль-заголовок ломал ритм вкладок.
+        # Верхний ряд отдан под действия — как ряд кнопок на других страницах.
         self.refresh_button = QPushButton("Обновить", self)
-        self.refresh_button.setGeometry(350, 0, 105, 45)
-        self.refresh_button.setToolTip("Обновить статистику")
-        self.refresh_button.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.refresh_button.setGeometry(0, 0, 287, 45)
+        self.refresh_button.setStyleSheet(BUTTON_STYLE)
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
 
         self.reset_button = QPushButton("Сбросить", self)
-        self.reset_button.setGeometry(465, 0, 125, 45)
-        self.reset_button.setToolTip("Сбросить накопленную статистику")
-        self.reset_button.setStyleSheet(ACTION_BUTTON_STYLE)
+        self.reset_button.setGeometry(303, 0, 287, 45)
+        self.reset_button.setStyleSheet(BUTTON_STYLE)
         self.reset_button.clicked.connect(self.reset_requested.emit)
 
-        self.library_card = StatisticsCard("Игр в списке", parent=self)
-        self.sessions_card = StatisticsCard("Сеансов", parent=self)
+        # Ряд показателей: четыре плитки одной высоты, как крупные плашки вкладок.
+        self.library_card = StatisticsCard("Игр в списке", MUTED_COLOR, self)
+        self.sessions_card = StatisticsCard("Сеансов", TEXT_COLOR, self)
         self.success_card = StatisticsCard("Успешно", SUCCESS_COLOR, self)
         self.reliability_card = StatisticsCard("Надёжность", ACTIVE_COLOR, self)
         for index, card in enumerate(
             (self.library_card, self.sessions_card, self.success_card, self.reliability_card)
         ):
-            card.setGeometry(index * 150, 60, 140, 88)
+            card.setGeometry(index * 150, 63, 140, 96)
 
+        # Панель «Текущая таблица»: подпись + сводка, полоса распределения, легенда.
         self.library_panel = QFrame(self)
         self.library_panel.setObjectName("statisticsPanel")
-        self.library_panel.setGeometry(0, 163, 590, 95)
+        self.library_panel.setGeometry(0, 177, 590, 110)
         self.library_panel.setStyleSheet(CARD_STYLE)
-        library_title = QLabel("СОСТОЯНИЕ ТЕКУЩЕЙ ТАБЛИЦЫ", self.library_panel)
-        library_title.setGeometry(15, 8, 280, 20)
-        library_title.setStyleSheet(SMALL_LABEL_STYLE)
+        library_title = QLabel("Текущая таблица", self.library_panel)
+        library_title.setGeometry(18, 16, 300, 20)
+        library_title.setStyleSheet(CAPTION_STYLE)
         self.library_summary_label = QLabel("", self.library_panel)
-        self.library_summary_label.setGeometry(295, 8, 280, 20)
+        self.library_summary_label.setGeometry(272, 16, 300, 20)
         self.library_summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.library_summary_label.setStyleSheet(SMALL_LABEL_STYLE)
+        self.library_summary_label.setStyleSheet(CAPTION_STYLE)
         self.distribution_bar = StatusDistributionBar(self.library_panel)
-        self.distribution_bar.setGeometry(15, 37, 560, 15)
+        self.distribution_bar.setGeometry(18, 48, 554, 16)
         self.legend_label = QLabel("", self.library_panel)
-        self.legend_label.setGeometry(15, 61, 560, 23)
+        self.legend_label.setGeometry(18, 76, 554, 24)
         self.legend_label.setTextFormat(Qt.TextFormat.RichText)
-        self.legend_label.setStyleSheet(BODY_LABEL_STYLE)
+        self.legend_label.setStyleSheet(BODY_STYLE)
 
+        # Панель «Последний сеанс»: итог одной строкой + время справа + детали снизу.
         self.activity_panel = QFrame(self)
         self.activity_panel.setObjectName("statisticsPanel")
-        self.activity_panel.setGeometry(0, 273, 590, 105)
+        self.activity_panel.setGeometry(0, 299, 590, 106)
         self.activity_panel.setStyleSheet(CARD_STYLE)
-        activity_title = QLabel("ПОСЛЕДНИЙ СЕАНС", self.activity_panel)
-        activity_title.setGeometry(15, 8, 220, 20)
-        activity_title.setStyleSheet(SMALL_LABEL_STYLE)
+        activity_title = QLabel("Последний сеанс", self.activity_panel)
+        activity_title.setGeometry(18, 14, 260, 20)
+        activity_title.setStyleSheet(CAPTION_STYLE)
         self.total_time_label = QLabel("Общее время: 0 сек.", self.activity_panel)
-        self.total_time_label.setGeometry(245, 8, 330, 20)
+        self.total_time_label.setGeometry(272, 14, 300, 20)
         self.total_time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.total_time_label.setStyleSheet(SMALL_LABEL_STYLE)
+        self.total_time_label.setStyleSheet(CAPTION_STYLE)
         self.last_summary_label = QLabel("Сеансов пока не было", self.activity_panel)
-        self.last_summary_label.setGeometry(15, 36, 360, 25)
+        self.last_summary_label.setGeometry(18, 40, 360, 26)
         self.last_summary_label.setStyleSheet(
             f"color: {TEXT_COLOR}; background: transparent; font-family: '{FONT_FAMILY}'; "
-            "font-size: 17px; font-weight: 600;"
+            "font-size: 19px; font-weight: 600;"
         )
         self.last_time_label = QLabel("", self.activity_panel)
-        self.last_time_label.setGeometry(380, 36, 195, 25)
+        self.last_time_label.setGeometry(372, 40, 200, 26)
         self.last_time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.last_time_label.setStyleSheet(BODY_LABEL_STYLE)
-        self.last_details_label = QLabel("Завершите первый буст — данные появятся автоматически.", self.activity_panel)
-        self.last_details_label.setGeometry(15, 70, 560, 22)
-        self.last_details_label.setStyleSheet(BODY_LABEL_STYLE)
-
-        self.hint_label = QLabel("Статистика хранится локально и обновляется после каждого сеанса.", self)
-        self.hint_label.setGeometry(0, 390, 590, 22)
-        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.hint_label.setStyleSheet(SMALL_LABEL_STYLE)
+        self.last_time_label.setStyleSheet(BODY_STYLE)
+        self.last_details_label = QLabel("Завершите первый буст — данные появятся здесь.", self.activity_panel)
+        self.last_details_label.setGeometry(18, 74, 554, 22)
+        self.last_details_label.setStyleSheet(
+            f"color: {MUTED_COLOR}; background: transparent; "
+            f"font-family: '{FONT_FAMILY}'; font-size: 14px;"
+        )
 
     def set_data(self, games, statistics):
         games = games if isinstance(games, (list, tuple)) else []
@@ -231,18 +211,18 @@ class StatisticsPanel(QWidget):
         }
 
         terminal = current["successful"] + current["failed"] + current["skipped"]
-        self.library_card.set_value(_number(library_total), "текущая таблица")
-        self.sessions_card.set_value(_number(sessions), f"завершено {statistics.get('completed_sessions', 0)}")
-        self.success_card.set_value(_number(successful), f"ошибок {failed}")
-        self.reliability_card.set_value(f"{reliability}%", "успешно / ошибки")
+        self.library_card.set_value(_number(library_total))
+        self.sessions_card.set_value(_number(sessions))
+        self.success_card.set_value(_number(successful))
+        self.reliability_card.set_value(f"{reliability}%")
         self.library_summary_label.setText(f"Обработано {terminal} из {library_total}")
         self.distribution_bar.set_counts(
             current["successful"], current["failed"], current["skipped"], current["other"]
         )
         self.legend_label.setText(
-            f"<span style='color:{SUCCESS_COLOR}'>●</span> Готово {current['successful']}&nbsp;&nbsp; "
-            f"<span style='color:{ERROR_COLOR}'>●</span> Ошибки {current['failed']}&nbsp;&nbsp; "
-            f"<span style='color:{SKIPPED_COLOR}'>●</span> Пропущено {current['skipped']}&nbsp;&nbsp; "
+            f"<span style='color:{SUCCESS_COLOR}'>●</span> Готово {current['successful']}&nbsp;&nbsp;&nbsp; "
+            f"<span style='color:{ERROR_COLOR}'>●</span> Ошибки {current['failed']}&nbsp;&nbsp;&nbsp; "
+            f"<span style='color:{SKIPPED_COLOR}'>●</span> Пропущено {current['skipped']}&nbsp;&nbsp;&nbsp; "
             f"<span style='color:{IDLE_COLOR}'>●</span> Остальные {current['other']}"
         )
         self.total_time_label.setText(
@@ -253,7 +233,7 @@ class StatisticsPanel(QWidget):
         if not isinstance(last, dict):
             self.last_summary_label.setText("Сеансов пока не было")
             self.last_time_label.clear()
-            self.last_details_label.setText("Завершите первый буст — данные появятся автоматически.")
+            self.last_details_label.setText("Завершите первый буст — данные появятся здесь.")
         else:
             if last.get("interrupted"):
                 state = "Прерван аварийно"
@@ -274,8 +254,3 @@ class StatisticsPanel(QWidget):
                 f"Ошибки {max(0, int(last.get('failed_games', 0) or 0))}  ·  "
                 f"Пропущено {max(0, int(last.get('skipped_games', 0) or 0))}"
             )
-
-        if statistics.get("active_session"):
-            self.hint_label.setText("Идёт активный сеанс — итог будет записан после его завершения.")
-        else:
-            self.hint_label.setText("Статистика хранится локально и обновляется после каждого сеанса.")

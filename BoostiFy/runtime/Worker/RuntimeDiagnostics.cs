@@ -15,7 +15,13 @@ namespace Boostify.Runtime.Worker
             {
                 WriteSchemaFixture(tempPath);
                 var names = AchievementCatalog.ReadNames(tempPath, 10);
-                if (names.Count != 1 || names.Single() != "ACH_TEST")
+                // Обе формы записи типа в реальных схемах Steam: число (type_int=4) и
+                // строка (type="ACHIEVEMENTS"). Строковую форму игнорировал прежний ридер,
+                // из-за чего достижения ~трети игр не находились, поэтому она обязана быть
+                // в self-test, иначе регрессия снова пройдёт мимо CI.
+                if (names.Count != 2 ||
+                    !names.Contains("ACH_INT_TYPE") ||
+                    !names.Contains("ACH_STRING_TYPE"))
                 {
                     Console.WriteLine("SELF_TEST_FAILED schema-reader");
                     return 1;
@@ -44,13 +50,25 @@ namespace Boostify.Runtime.Worker
             {
                 WriteObject(writer, "10", () =>
                     WriteObject(writer, "stats", () =>
+                    {
+                        // Стат с числовым типом (type_int=4).
                         WriteObject(writer, "0", () =>
                         {
                             WriteInt32(writer, "type_int", 4);
                             WriteObject(writer, "bits", () =>
                                 WriteObject(writer, "0", () =>
-                                    WriteString(writer, "name", "ACH_TEST")));
-                        })));
+                                    WriteString(writer, "name", "ACH_INT_TYPE")));
+                        });
+                        // Стат со строковым типом (type="ACHIEVEMENTS", без type_int) —
+                        // именно такой формат прежний ридер не распознавал.
+                        WriteObject(writer, "1", () =>
+                        {
+                            WriteString(writer, "type", "ACHIEVEMENTS");
+                            WriteObject(writer, "bits", () =>
+                                WriteObject(writer, "0", () =>
+                                    WriteString(writer, "name", "ACH_STRING_TYPE")));
+                        });
+                    }));
                 writer.Write((byte)8);
             }
         }

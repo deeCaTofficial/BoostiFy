@@ -1,8 +1,10 @@
 # editable_label.py — виджет EditableLabel
 
-from PyQt6.QtWidgets import QWidget, QLabel, QLineEdit
-from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QLabel, QLineEdit, QWidget
+
 from BoostiFy.GUI.utils.styles import LABEL_AS_BUTTON_STYLE
+
 
 class EditableLabel(QWidget):
     # Сигнал для добавления игры по Enter

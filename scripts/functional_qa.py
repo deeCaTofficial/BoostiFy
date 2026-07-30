@@ -4,7 +4,6 @@ import tempfile
 import time
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -97,8 +96,10 @@ class FakeBooster:
                 "kwargs": kwargs,
             }
         )
+        # Отдаём КОДЫ ПРОТОКОЛА, как настоящий SteamBooster, а не готовые подписи:
+        # иначе прогон минует _display_status и не заметит рассинхрон переводов.
         for appid in appids:
-            callback(appid, "Бустится")
+            callback(appid, "started")
         callback(
             "progress",
             {
@@ -108,7 +109,7 @@ class FakeBooster:
             },
         )
         for appid in appids:
-            callback(appid, "Готово")
+            callback(appid, "done")
         callback("boost", "finished")
 
     def stop_boost(self):
@@ -150,6 +151,7 @@ def configure_isolated_storage(temp_dir):
 
 def patch_dialogs():
     from PyQt6.QtWidgets import QDialog
+
     from BoostiFy.GUI.widgets import toast
 
     toast.InfoDialog.exec = lambda self: QDialog.DialogCode.Accepted
@@ -161,15 +163,15 @@ def main():
         game_storage = configure_isolated_storage(temp_dir)
         patch_dialogs()
 
-        from PyQt6.QtCore import Qt, QEvent
+        from PyQt6.QtCore import QEvent, QItemSelectionModel, Qt
         from PyQt6.QtGui import QGuiApplication, QKeyEvent
         from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import QItemSelectionModel
-        import BoostiFy.GUI.screens.settings_screen as settings_module
+
         import BoostiFy.GUI.main_window as main_window_module
+        import BoostiFy.GUI.screens.settings_screen as settings_module
 
         main_window_module.runtime_is_ready = lambda: True
-        main_window_module.missing_runtime_files = lambda: []
+        main_window_module.missing_runtime_files = list
         MainWindow = main_window_module.MainWindow
 
         app = QApplication.instance() or QApplication(sys.argv)
@@ -300,15 +302,15 @@ def main():
             stats_panel.reliability_card,
         )
         check(
-            stats_panel.title_label.geometry().right() < stats_panel.refresh_button.geometry().left()
-            and stats_panel.refresh_button.geometry().right() < stats_panel.reset_button.geometry().left()
+            stats_panel.refresh_button.geometry().right() < stats_panel.reset_button.geometry().left()
             and all(
                 left.geometry().right() < right.geometry().left()
                 for left, right in zip(stats_cards[:-1], stats_cards[1:], strict=True)
             )
+            and stats_panel.refresh_button.geometry().bottom() < stats_panel.library_card.geometry().top()
+            and stats_panel.library_card.geometry().bottom() < stats_panel.library_panel.geometry().top()
             and stats_panel.library_panel.geometry().bottom()
-            < stats_panel.activity_panel.geometry().top()
-            and stats_panel.activity_panel.geometry().bottom() < stats_panel.hint_label.geometry().top(),
+            < stats_panel.activity_panel.geometry().top(),
             "statistics dashboard controls never overlap",
         )
         settings._set_section(0)

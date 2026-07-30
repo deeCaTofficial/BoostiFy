@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+
 def find_project_root(start: Path) -> Path | None:
     for path in (start, *start.parents):
         if (path / 'BoostiFy' / 'runtime' / 'Boostify.Runtime.sln').exists():
@@ -35,7 +36,7 @@ def find_project_root_and_files():
     exe_files = []
 
     print(f"[INFO] Поиск файлов внутри {root_path}...")
-    for root, dirs, files in os.walk(root_path):
+    for root, _dirs, files in os.walk(root_path):
         for file_name in files:
             lower_name = file_name.lower()
             if lower_name.endswith('.sln'):

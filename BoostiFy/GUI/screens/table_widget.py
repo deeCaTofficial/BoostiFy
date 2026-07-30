@@ -1,5 +1,6 @@
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
+
 class GameTableModel(QAbstractTableModel):
     def __init__(self, games=None):
         super().__init__()
@@ -22,16 +23,16 @@ class GameTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if col == 0:
                 return str(row + 1)
-            elif col == 1:
+            if col == 1:
                 return str(game.get('appid', ''))
-            elif col == 2:
+            if col == 2:
                 return str(game.get('name', ''))
-            elif col == 3:
+            if col == 3:
                 return str(game.get('status', ''))
         if role == Qt.ItemDataRole.TextAlignmentRole:
             if col == 0 or col == 1 or col == 3:
                 return Qt.AlignmentFlag.AlignCenter
-            elif col == 2:
+            if col == 2:
                 return Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
         if role == Qt.ItemDataRole.ToolTipRole and col == 2:
             return str(game.get('name', ''))

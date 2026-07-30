@@ -1,8 +1,8 @@
 [project]
 name = "BoostiFy"
-version = "1.0.0"
+version = "1.1.0"
 description = "Windows desktop application for managing Steam activity and achievements."
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 authors = [{ name = "deeCaT" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -12,8 +12,26 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = [
+    "E4", "E7", "E9", "F",  # базовый набор: pycodestyle + pyflakes
+    "B",    # bugbear: реальные ловушки (изменяемые дефолты, потеря контекста исключений)
+    "UP",   # pyupgrade: синтаксис, доступный на requires-python
+    "I",    # сортировка импортов
+    "C4",   # лишние comprehension-обёртки
+    "RET",  # избыточные else после return
+    "PIE",  # мелкая шелуха
+    "LOG",  # ошибки использования logging
+    "PERF", # очевидные потери производительности в циклах
+]
+# RUF001-003 (ambiguous-unicode) намеренно НЕ включены: проект русскоязычный, и правило
+# принимает кириллицу в комментариях за подделку под латиницу — 214 ложных срабатываний.
+# SIM112 тоже мимо: требует переименовать SteamInstallPath, а это реальное имя
+# переменной окружения Windows.
+
+[tool.ruff.lint.per-file-ignores]
+# Qt-идиома: сигнатуры моделей обязаны принимать QModelIndex() по умолчанию.
+"BoostiFy/GUI/screens/table_widget.py" = ["B008"]

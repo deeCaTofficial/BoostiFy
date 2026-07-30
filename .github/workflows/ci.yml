@@ -8,11 +8,16 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Рабочая версия разработки, совпадает с requires-python (>=3.14).
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - uses: actions/setup-dotnet@v4
         with:

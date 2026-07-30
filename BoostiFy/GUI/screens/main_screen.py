@@ -1,18 +1,19 @@
 # main_screen.py — главный экран приложения
 
-from PyQt6.QtWidgets import QWidget, QPushButton, QProgressBar, QTableView, QDialog
-from PyQt6.QtCore import pyqtSignal, QTimer, Qt, QItemSelectionModel, QItemSelection, QThreadPool
+from PyQt6.QtCore import QItemSelection, QItemSelectionModel, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
-from BoostiFy.GUI.widgets.editable_label import EditableLabel
-from BoostiFy.GUI.utils.styles import BUTTON_STYLE
-from BoostiFy.GUI.utils.helpers import format_time_verbose
-from BoostiFy.GUI.core.game_storage import DEFAULT_CONFIG, load_games, save_games
+from PyQt6.QtWidgets import QDialog, QProgressBar, QPushButton, QTableView, QWidget
+
 from BoostiFy.core.booster import SteamBooster
-from BoostiFy.core.steam_lookup import SteamAppLookup
-from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
-from BoostiFy.GUI.screens.table_widget import GameTableModel
 from BoostiFy.core.runtime_paths import BACKGROUND_WORKER
+from BoostiFy.core.steam_lookup import SteamAppLookup
 from BoostiFy.GUI.core.async_tasks import BackgroundTask
+from BoostiFy.GUI.core.game_storage import DEFAULT_CONFIG, load_games, save_games
+from BoostiFy.GUI.screens.table_widget import GameTableModel
+from BoostiFy.GUI.utils.helpers import format_time_verbose
+from BoostiFy.GUI.utils.styles import BUTTON_STYLE
+from BoostiFy.GUI.widgets.editable_label import EditableLabel
+from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
 
 __all__ = ['MainScreenWidget']
 

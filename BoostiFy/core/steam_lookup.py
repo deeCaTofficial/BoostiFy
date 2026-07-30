@@ -1,14 +1,12 @@
+import gzip
 import json
 import os
 import threading
+import urllib.request
 import uuid
 from pathlib import Path
-from typing import Optional
-
-import requests
 
 from BoostiFy.core.app_paths import DATA_DIR
-
 
 STEAM_APPLIST_URL = "https://raw.githubusercontent.com/dgibbs64/SteamCMD-AppID-List/master/steamcmd_appid.json"
 
@@ -72,19 +70,26 @@ class SteamAppLookup:
             if folded:
                 self._folded_index.setdefault(folded, appid)
 
-    def get_name(self, appid) -> Optional[str]:
+    def get_name(self, appid) -> str | None:
         """Имя игры по appid за O(1) (обратный индекс), либо None."""
         return self._appid_index.get(str(appid)) or None
 
     def fetch_applist(self):
+        # stdlib вместо requests: единственный HTTP-вызов в проекте не стоит зависимости.
+        # urlopen сам поднимает HTTPError на 4xx/5xx, поэтому raise_for_status не нужен.
         try:
-            resp = requests.get(
+            request = urllib.request.Request(
                 STEAM_APPLIST_URL,
-                timeout=20,
-                headers={"User-Agent": "BoostiFy/1.0"},
+                headers={"User-Agent": "BoostiFy/1.0", "Accept-Encoding": "gzip"},
             )
-            resp.raise_for_status()
-            apps = self._normalize_apps_payload(resp.json())
+            with urllib.request.urlopen(request, timeout=20) as response:
+                raw = response.read()
+                # requests распаковывал gzip сам; каталог Steam весит десятки МБ,
+                # поэтому сжатие запрашиваем явно и разжимаем руками.
+                if response.headers.get("Content-Encoding") == "gzip":
+                    raw = gzip.decompress(raw)
+            # utf-8-sig: снимает BOM, если он есть, и не мешает, если его нет.
+            apps = self._normalize_apps_payload(json.loads(raw.decode("utf-8-sig")))
             if apps:  # не кешируем пустой/битый ответ, иначе он подменит валидный кэш
                 self._write_cache(apps)
             return apps
@@ -96,7 +101,7 @@ class SteamAppLookup:
         apps = self._read_cache(self.cache_file)
         return apps or None
 
-    def find_appid(self, name: str) -> Optional[int]:
+    def find_appid(self, name: str) -> int | None:
         exact = self.find_exact_appid(name)
         if exact is not None:
             return exact
@@ -111,7 +116,7 @@ class SteamAppLookup:
 
         return None
 
-    def find_exact_appid(self, name: str) -> Optional[int]:
+    def find_exact_appid(self, name: str) -> int | None:
         """Resolve only an unambiguous exact name, including punctuation folding."""
         query = _normalize_name(name)
         if not query:

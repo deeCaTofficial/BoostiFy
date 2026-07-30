@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 RUNTIME_ROOT = Path(__file__).resolve().parent
 SOLUTION = RUNTIME_ROOT / "Boostify.Runtime.sln"
 WORKER_PROJECT = RUNTIME_ROOT / "Worker" / "Boostify.Runtime.Worker.csproj"

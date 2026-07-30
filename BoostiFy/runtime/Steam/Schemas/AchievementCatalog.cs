@@ -5,9 +5,6 @@ namespace Boostify.Runtime.Steam.Schemas
 {
     public static class AchievementCatalog
     {
-        private const int AchievementStatType = 4;
-        private const int GroupAchievementStatType = 5;
-
         public static IReadOnlyList<string> ReadNames(string schemaPath, uint appId)
         {
             var root = BinaryKvReader.ReadFile(schemaPath);
@@ -23,15 +20,12 @@ namespace Boostify.Runtime.Steam.Schemas
             var unique = new HashSet<string>();
             foreach (var stat in stats.Children)
             {
-                var type = stat.Find("type_int")?.AsInt32(
-                    stat.Find("type")?.AsInt32() ?? 0)
-                    ?? stat.Find("type")?.AsInt32()
-                    ?? 0;
-                if (type != AchievementStatType && type != GroupAchievementStatType)
-                {
-                    continue;
-                }
-
+                // Достижения лежат в статах с подузлом "bits" — и только у них он есть
+                // (INT/FLOAT/AVGRATE-статы его не имеют). Раньше стат сначала отбирался по
+                // числовому типу (4/5), но Steam пишет "type" то числом (4), то строкой
+                // ("ACHIEVEMENTS"): на строковом варианте Convert.ToInt32 бросал исключение,
+                // тип обнулялся, и достижения ~трети игр просто не находились. Наличие "bits"
+                // — признак надёжнее и не зависит от того, как записан тип.
                 var bits = stat.Find("bits");
                 if (bits == null)
                 {

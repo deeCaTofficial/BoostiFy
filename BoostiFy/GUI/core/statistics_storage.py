@@ -5,7 +5,6 @@ from pathlib import Path
 
 from BoostiFy.GUI.core import game_storage
 
-
 MAX_RECENT_SESSIONS = 8
 DEFAULT_STATISTICS = {
     "version": 1,
@@ -29,7 +28,7 @@ def classify_game_statuses(games):
         status = str(game.get("status", "") if isinstance(game, dict) else "").strip().lower()
         if status.startswith("готово"):
             counts["successful"] += 1
-        elif status.startswith("ошибка") or status.startswith("не выполнено"):
+        elif status.startswith(("ошибка", "не выполнено")):
             counts["failed"] += 1
         elif status.startswith("пропущено"):
             counts["skipped"] += 1

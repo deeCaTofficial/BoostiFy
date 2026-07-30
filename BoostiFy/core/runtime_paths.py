@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = PACKAGE_ROOT / "runtime"
 WORKER_OUTPUT = RUNTIME_ROOT / "Worker" / "bin" / "x86" / "Release" / "net48"

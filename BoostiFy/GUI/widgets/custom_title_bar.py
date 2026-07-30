@@ -1,7 +1,8 @@
 # custom_title_bar.py — виджет CustomTitleBar
 
-from PyQt6.QtWidgets import QWidget, QPushButton
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QPushButton, QWidget
+
 
 class CustomTitleBar(QWidget):
     def __init__(self, parent):

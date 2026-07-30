@@ -1,19 +1,19 @@
 import heapq
-import subprocess
-import time
-import threading
-import os
-import random
-import uuid
-from typing import List, Dict, Optional, Callable
-from collections import deque
-import queue
-from datetime import datetime
 import json
+import os
+import queue
+import random
+import subprocess
+import threading
+import time
+import uuid
+from collections import deque
+from collections.abc import Callable
+from datetime import datetime
 
-from BoostiFy.core.runtime_paths import BACKGROUND_WORKER, OWNERSHIP_WORKER
-from BoostiFy.core.app_paths import DATA_DIR
 from BoostiFy.core import process_group
+from BoostiFy.core.app_paths import DATA_DIR
+from BoostiFy.core.runtime_paths import BACKGROUND_WORKER, OWNERSHIP_WORKER
 
 BOOST_WORKER_PATH = str(BACKGROUND_WORKER)
 OWNERSHIP_WORKER_PATH = str(OWNERSHIP_WORKER)
@@ -46,7 +46,7 @@ def load_json_list(path):
     if not os.path.isfile(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, list) else []
     except Exception:
@@ -120,7 +120,7 @@ class SteamBooster:
         self.booster_cwd = os.path.dirname(booster_executable)
 
         # Атрибуты для управления процессами буста
-        self.processes: Dict[str, subprocess.Popen] = {}
+        self.processes: dict[str, subprocess.Popen] = {}
         self.running = False
         self.lock = threading.Lock()
         self._session_lock = threading.RLock()
@@ -136,7 +136,7 @@ class SteamBooster:
         self._slot_started_at = {}
 
         # Атрибуты для управления C#-сервером проверки владения
-        self._server_proc: Optional[subprocess.Popen] = None
+        self._server_proc: subprocess.Popen | None = None
         self._server_lock = threading.RLock()
         self._server_request_lock = (
             threading.Lock()
@@ -249,127 +249,13 @@ class SteamBooster:
             break
         return process.returncode
 
-    # --- МЕТОД 1: Пакетный буст ---
-    def start_boost_batch(
-        self,
-        appids: List[str],
-        batch_size: int,
-        duration_sec: int,
-        status_callback: Optional[Callable] = None,
-        unlock_achievements: bool = False,
-    ):
-        """Run batches in one guarded session."""
-        appids = self._normalize_appids(appids)
-        if not appids:
-            self._notify(status_callback, "boost", "finished")
-            return
-        self.ensure_empty_lists()
-        batch_size = max(1, int(batch_size or 1))
-        duration_sec = max(1, int(duration_sec or 1))
-        session_id, stop_event = self._begin_session()
-        black_set = {
-            str(entry.get("appid"))
-            for entry in load_json_list(
-                os.path.join(get_upload_dir(), "black_list.json")
-            )
-            if isinstance(entry, dict)
-        }
-        name_map = build_name_map()
-
-        def boost_thread():
-            try:
-                total = len(appids)
-                total_batches = (total + batch_size - 1) // batch_size
-                session_start_time = time.time()
-                log_with_time("info", None, f"Start boost: {total} games, {total_batches} batches.")
-                for batch_idx, offset in enumerate(range(0, total, batch_size)):
-                    if stop_event.is_set():
-                        break
-                    source_batch = appids[offset : offset + batch_size]
-                    batch = []
-                    for appid in source_batch:
-                        if appid in black_set:
-                            self._notify(status_callback, appid, "skipped: black list")
-                        else:
-                            batch.append(appid)
-                    procs = []
-                    log_with_time("info", None, f"--- Batch {batch_idx + 1}/{total_batches} ---")
-                    for appid in batch:
-                        if stop_event.is_set():
-                            break
-                        try:
-                            proc = self._run_steambooster(
-                                appid,
-                                unlock_all=unlock_achievements,
-                                duration_sec=duration_sec,
-                            )
-                            with self.lock:
-                                self.processes[appid] = proc
-                            procs.append((appid, proc))
-                            self._notify(status_callback, appid, "started")
-                        except Exception as error:
-                            log_with_time("error", appid, f"Не удалось запустить игру: {error}")
-                            self._notify(status_callback, appid, f"error: {error}")
-
-                    batch_start_time = time.time()
-                    while procs and not stop_event.wait(0.5):
-                        if all(process.poll() is not None for _, process in procs):
-                            break
-                        self._emit_progress(
-                            status_callback,
-                            session_start_time,
-                            total_batches,
-                            duration_sec,
-                            batch_start_time,
-                        )
-
-                    if stop_event.is_set():
-                        for appid, process in procs:
-                            if process.poll() is None:
-                                process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                process.kill()
-                                process.wait(timeout=2)
-                            self._notify(status_callback, appid, "stopped")
-                        break
-
-                    upload_dir = get_upload_dir()
-                    white_list_path = os.path.join(upload_dir, "white_list.json")
-                    black_list_path = os.path.join(upload_dir, "black_list.json")
-                    for appid, process in procs:
-                        process.wait()
-                        name = name_map.get(appid) or appid
-                        with self.lock:
-                            self.processes.pop(appid, None)
-                        if process.returncode in (0, 42):
-                            append_unique_status(
-                                white_list_path, self.white_list_lock, appid, name, "OK"
-                            )
-                            self._notify(status_callback, appid, "done")
-                        else:
-                            reason = self._failure_reason(process)
-                            append_unique_status(
-                                black_list_path, self.black_list_lock, appid, name, reason
-                            )
-                            self._notify(status_callback, appid, f"error: {reason}")
-            except Exception as error:
-                log_with_time("error", None, f"Сбой batch-сессии: {error}")
-            finally:
-                self._finish_session(session_id)
-                log_with_time("info", None, "Буст завершен.")
-                self._notify(status_callback, "boost", "finished")
-
-        threading.Thread(target=boost_thread, daemon=True).start()
-
     # --- МЕТОД 2: СКОЛЬЗЯЩИЙ БУСТ (ETA ПО РАСПИСАНИЮ СЛОТОВ) ---
     def start_boost_sliding(
         self,
-        appids: List[str],
+        appids: list[str],
         num_slots: int,
         duration_sec: int,
-        status_callback: Optional[Callable] = None,
+        status_callback: Callable | None = None,
         unlock_achievements: bool = False,
         launch_cd_range=(5, 35),
         finish_cd_range=(5, 35),
@@ -621,9 +507,9 @@ class SteamBooster:
         self,
         appid: str,
         unlock_all: bool = False,
-        extra_args: Optional[List[str]] = None,
-        duration_sec: Optional[int] = None,
-        slot_id: Optional[int] = None,
+        extra_args: list[str] | None = None,
+        duration_sec: int | None = None,
+        slot_id: int | None = None,
     ):
         """Формирует команду и запускает фоновый worker для одной игры."""
         normalized = self._normalize_appids([appid])
@@ -729,40 +615,13 @@ class SteamBooster:
             reader.join(timeout=2)
         captured = getattr(proc, "_captured_lines", None)
         if captured:
-            tail = " | ".join(captured[-3:]).strip()
+            # captured — deque(maxlen=64); он поддерживает индексацию, но НЕ срезы,
+            # поэтому captured[-3:] бросал "sequence index must be integer, not 'slice'"
+            # и причина провала не попадала в black_list. Материализуем в list для среза.
+            tail = " | ".join(list(captured)[-3:]).strip()
             if tail:
                 reason += f" | {tail}"
         return reason
-
-    def _emit_progress(
-        self,
-        status_callback,
-        session_start_time,
-        total_batches,
-        duration_sec,
-        batch_start_time,
-    ):
-        """Отправляет колбэк с текущим прогрессом."""
-        if not status_callback:
-            return
-        now = time.time()
-        session_elapsed = int(now - session_start_time)
-        session_total = total_batches * duration_sec
-        session_left = max(0, session_total - session_elapsed)
-        batch_elapsed = 0
-        batch_left = duration_sec
-        if batch_start_time is not None:
-            batch_elapsed = int(now - batch_start_time)
-            batch_left = max(0, duration_sec - batch_elapsed)
-        status = {
-            "elapsed": session_elapsed,
-            "total": session_total,
-            "batch_elapsed": batch_elapsed,
-            "batch_total": duration_sec,
-            "session_left_sec": session_left,
-            "batch_left_sec": batch_left,
-        }
-        self._notify(status_callback, "progress", status)
 
     # --- МЕТОДЫ ДЛЯ БЫСТРОЙ ПРОВЕРКИ ВЛАДЕНИЯ ---
 
@@ -881,14 +740,14 @@ class SteamBooster:
                     {"OWNED", "NOT_OWNED", "INVALID"}, timeout=10
                 )
             return response == "OWNED"
-        except (queue.Empty, BrokenPipeError):
+        except (queue.Empty, BrokenPipeError) as error:
             log_with_time(
                 "error",
                 appid,
                 f"[ERROR] Сервер не ответил или был закрыт для AppID {appid}. Попытка перезапуска.",
             )
             self.shutdown_server()
-            raise RuntimeError("Steam не ответил на проверку владения.")
+            raise RuntimeError("Steam не ответил на проверку владения.") from error
         except Exception as e:
             log_with_time(
                 "error", appid, f"[ERROR] Ошибка при проверке AppID {appid}: {e}"
@@ -896,7 +755,7 @@ class SteamBooster:
             self.shutdown_server()
             raise RuntimeError(f"Ошибка проверки Steam: {e}") from e
 
-    def check_games_owned_batch(self, appids: List[str]) -> List[str]:
+    def check_games_owned_batch(self, appids: list[str]) -> list[str]:
         """Проверяет владение списком игр через сервер. Блокирующий вызов."""
         appids = self._normalize_appids(appids)[:500]
         if not appids:
@@ -914,16 +773,15 @@ class SteamBooster:
                 if not owned_str:
                     return []
                 return owned_str.split(",")
-            else:
-                return []
-        except (queue.Empty, BrokenPipeError):
+            return []
+        except (queue.Empty, BrokenPipeError) as error:
             log_with_time(
                 "error",
                 None,
                 "[ERROR] Сервер не ответил или был закрыт на batch-запрос. Попытка перезапуска.",
             )
             self.shutdown_server()
-            raise RuntimeError("Steam не ответил на пакетную проверку владения.")
+            raise RuntimeError("Steam не ответил на пакетную проверку владения.") from error
         except Exception as e:
             log_with_time("error", None, f"[ERROR] Ошибка при batch-проверке: {e}")
             self.shutdown_server()

@@ -1,6 +1,5 @@
 from BoostiFy.core.booster import SteamBooster
 
-
 # Задача слота: launch_cd -> игра (duration + finish_cd) -> slot_cd.
 # 12 часов при дефолтных кулдаунах (20 + 20 + 75).
 TASK = 43200 + 20 + 20 + 75

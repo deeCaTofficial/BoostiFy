@@ -6,7 +6,6 @@ from pathlib import Path
 
 from BoostiFy.core.app_paths import DATA_DIR, migrate_legacy_data
 
-
 DEFAULT_CONFIG = {
     "concurrent_value": 15,
     "duration_value": 900,
@@ -49,7 +48,7 @@ def ensure_storage_ready(migrate: bool = True) -> None:
 
 def _load_json(path, default):
     try:
-        with open(path, "r", encoding="utf-8-sig") as stream:
+        with open(path, encoding="utf-8-sig") as stream:
             return json.load(stream)
     except (OSError, json.JSONDecodeError, UnicodeError) as error:
         if os.path.exists(path):

@@ -1,6 +1,6 @@
 import struct
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
 # --- НАСТРОЙКА: Список папок и файлов, которые нужно полностью игнорировать ---
 # Добавьте сюда любой "мусор", который вы не хотите видеть в отчете.
@@ -38,11 +38,10 @@ def get_binary_architecture(file_path: Path) -> str:
             
             if magic == 0x10b:
                 return "x86"
-            elif magic == 0x20b:
+            if magic == 0x20b:
                 return "x64"
-            else:
-                return "Неизвестно"
-    except (IOError, struct.error):
+            return "Неизвестно"
+    except (OSError, struct.error):
         return "Ошибка чтения"
 
 def get_file_annotation(path: Path) -> str:

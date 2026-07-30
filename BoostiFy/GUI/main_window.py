@@ -1,25 +1,32 @@
 # main_window.py — точка входа для BoostiFy GUI
 
-from PyQt6.QtWidgets import QMainWindow, QFrame, QStackedWidget, QApplication, QLabel, QDialog
+from pathlib import Path
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from BoostiFy.GUI.widgets.custom_title_bar import CustomTitleBar
-from BoostiFy.GUI.screens.main_screen import MainScreenWidget
-from BoostiFy.GUI.screens.settings_screen import SettingsScreenWidget
-from BoostiFy.GUI.core.game_storage import DEFAULT_CONFIG, load_config, normalize_config, save_config, save_games
+from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QMainWindow, QStackedWidget
+
+from BoostiFy.core.runtime_paths import missing_runtime_files, runtime_is_ready
+from BoostiFy.GUI.core.game_storage import (
+    DEFAULT_CONFIG,
+    load_config,
+    normalize_config,
+    save_config,
+    save_games,
+)
 from BoostiFy.GUI.core.statistics_storage import (
     classify_game_statuses,
     discard_statistics_session,
     finish_statistics_session,
     start_statistics_session,
 )
+from BoostiFy.GUI.screens.main_screen import MainScreenWidget
+from BoostiFy.GUI.screens.settings_screen import SettingsScreenWidget
 from BoostiFy.GUI.utils.styles import BG_COLOR, BORDER_RADIUS
+from BoostiFy.GUI.widgets.custom_title_bar import CustomTitleBar
 from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
-from BoostiFy.core.runtime_paths import BACKGROUND_WORKER, missing_runtime_files, runtime_is_ready
-from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BOOSTER_EXECUTABLE = BACKGROUND_WORKER
 
 
 class MainWindow(QMainWindow):
@@ -149,19 +156,13 @@ class MainWindow(QMainWindow):
         self.unlock_achievements = safe['unlock_achievements']
         self.fast_paste_enabled = safe['fast_paste_enabled']
         self.time_mode = safe['time_mode']
-        self.loop_boost = self.config.get('loop_boost', False)
-        self.launch_cd_range = (
-            self.config.get('launch_cd_from', 5),
-            self.config.get('launch_cd_to', 35)
-        )
-        self.finish_cd_range = (
-            self.config.get('finish_cd_from', 5),
-            self.config.get('finish_cd_to', 35)
-        )
-        self.slot_cd_range = (
-            self.config.get('slot_cd_from', 60),
-            self.config.get('slot_cd_to', 90)
-        )
+        # Читаем из safe, а не из self.config: config обновляется ниже, и до этой правки
+        # поля брались из ещё не нормализованного словаря — в памяти оседало незажатое
+        # значение, а на диск уходило зажатое.
+        self.loop_boost = safe['loop_boost']
+        self.launch_cd_range = (safe['launch_cd_from'], safe['launch_cd_to'])
+        self.finish_cd_range = (safe['finish_cd_from'], safe['finish_cd_to'])
+        self.slot_cd_range = (safe['slot_cd_from'], safe['slot_cd_to'])
         self.config.update(safe)
         save_config(self.config)
         self.main_screen.update_time_label()

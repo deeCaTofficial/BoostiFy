@@ -1,9 +1,17 @@
 # toast.py — виджеты для диалоговых окон
 
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import QDialog, QLabel, QPushButton
-from PyQt6.QtCore import Qt, QRect
-from PyQt6.QtGui import QPainter, QColor, QPen
-from BoostiFy.GUI.utils.styles import BG_COLOR, BUTTON_STYLE, BORDER_RADIUS
+
+from BoostiFy.GUI.utils.styles import (
+    BG_COLOR,
+    BORDER_RADIUS,
+    BUTTON_STYLE,
+    FONT_FAMILY,
+    FONT_SIZE,
+)
+
 
 class _BaseDraggableDialog(QDialog):
     """
@@ -61,24 +69,48 @@ class CustomConfirmDialog(_BaseDraggableDialog):
     """Диалог с двумя кнопками (Да/Нет)."""
     def __init__(self, parent, message, yes_text="Да", no_text="Нет"):
         super().__init__(parent)
-        self.setFixedSize(400, 160)
-        
+
         self.label = QLabel(message, self)
         self.label.setWordWrap(True)
-        self.label.setGeometry(15, 15, 370, 90)
         self.label.setStyleSheet("color: #dcdedf; font-size: 18px; background: transparent; border: none;")
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         self.btn_yes = QPushButton(yes_text, self)
-        self.btn_yes.setGeometry(70, 110, 100, 35)
         self.btn_yes.setStyleSheet(BUTTON_STYLE)
-        
+
         self.btn_no = QPushButton(no_text, self)
-        self.btn_no.setGeometry(230, 110, 100, 35)
         self.btn_no.setStyleSheet(BUTTON_STYLE)
-        
+
+        # Ширину кнопок и окна считаем по тексту, а не фиксируем: «Продолжить» в 20px
+        # (размер из BUTTON_STYLE) не влезало в жёсткие 100px и обрезалось по центру до
+        # «родолжит», а после расширения кнопок пара переставала помещаться в 400px окна.
+        # QFontMetrics строим на пиксельном размере — как в таблице стилей, иначе замер
+        # уходит в point-size и не сходится с рендером.
+        self._layout(yes_text, no_text)
+
         self.btn_yes.clicked.connect(self.accept)
         self.btn_no.clicked.connect(self.reject)
+
+    def _layout(self, yes_text, no_text):
+        margin, gap, padding = 15, 30, 40
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FONT_SIZE)
+        metrics = QFontMetrics(font)
+        width_yes = max(100, metrics.horizontalAdvance(yes_text) + padding)
+        width_no = max(100, metrics.horizontalAdvance(no_text) + padding)
+
+        buttons_total = width_yes + gap + width_no
+        # Окно расширяем, если кнопки не помещаются в базовые 400px.
+        dialog_width = max(400, buttons_total + 2 * margin)
+        dialog_height = 160
+        self.setFixedSize(dialog_width, dialog_height)
+
+        self.label.setGeometry(margin, 15, dialog_width - 2 * margin, 90)
+
+        start_x = (dialog_width - buttons_total) // 2
+        y, height = 110, 35
+        self.btn_yes.setGeometry(start_x, y, width_yes, height)
+        self.btn_no.setGeometry(start_x + width_yes + gap, y, width_no, height)
 
 
 class InfoDialog(_BaseDraggableDialog):

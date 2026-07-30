@@ -1,6 +1,7 @@
 import shutil
 from pathlib import Path
 
+
 def find_project_root() -> Path:
     start = Path(__file__).resolve()
     for path in (start.parent, *start.parents):

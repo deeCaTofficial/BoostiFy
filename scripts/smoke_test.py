@@ -6,7 +6,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
@@ -67,6 +66,7 @@ def validate_json_files():
 def instantiate_gui():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
+
     from BoostiFy.GUI.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -136,8 +136,7 @@ def check_runtime_binaries(required=False, check_steam=False):
         text=True,
         encoding="utf-8",
         errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=15,
     )
     stdout_lines = [line.strip() for line in server_result.stdout.splitlines() if line.strip()]

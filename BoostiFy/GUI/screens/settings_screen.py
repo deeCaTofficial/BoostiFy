@@ -1,16 +1,16 @@
 # settings_screen.py — экран настроек приложения
 
-from PyQt6.QtWidgets import QWidget, QPushButton, QLabel, QProgressBar, QDialog, QStackedWidget
-from PyQt6.QtCore import pyqtSignal, QThreadPool
-from BoostiFy.GUI.utils.styles import (
-    BUTTON_STYLE,
-    LABEL_AS_BUTTON_STYLE,
-    NAV_BUTTON_STYLE,
-    TOGGLE_BUTTON_STYLE,
-)
-from BoostiFy.GUI.utils.helpers import format_time_verbose
-from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
+import json
+import time
+from pathlib import Path
+
+from PyQt6.QtCore import QThreadPool, pyqtSignal
+from PyQt6.QtWidgets import QDialog, QLabel, QProgressBar, QPushButton, QStackedWidget, QWidget
+
 from BoostiFy.core.booster import SteamBooster
+from BoostiFy.core.runtime_paths import BACKGROUND_WORKER
+from BoostiFy.core.steam_lookup import SteamAppLookup
+from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import (
     DEFAULT_CONFIG,
     UPLOAD_DIR,
@@ -22,12 +22,15 @@ from BoostiFy.GUI.core.game_storage import (
 )
 from BoostiFy.GUI.core.statistics_storage import load_statistics, reset_statistics
 from BoostiFy.GUI.screens.statistics_screen import StatisticsPanel
-from BoostiFy.core.runtime_paths import BACKGROUND_WORKER
-from BoostiFy.core.steam_lookup import SteamAppLookup
-from BoostiFy.GUI.core.async_tasks import BackgroundTask
-from pathlib import Path
-import json
-import time
+from BoostiFy.GUI.utils.helpers import format_time_verbose
+from BoostiFy.GUI.utils.styles import (
+    BUTTON_STYLE,
+    LABEL_AS_BUTTON_STYLE,
+    NAV_BUTTON_STYLE,
+    TOGGLE_BUTTON_STYLE,
+)
+from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
+
 
 class SettingsScreenWidget(QWidget):
     back_requested = pyqtSignal()
@@ -559,31 +562,29 @@ class SettingsScreenWidget(QWidget):
         seconds = int(seconds)
         if seconds < 60:
             return f"{seconds}с."
-        elif seconds < 3600:
+        if seconds < 3600:
             return f"{seconds//60}м."
-        elif seconds < 86400:
+        if seconds < 86400:
             return f"{seconds//3600}ч."
-        elif seconds <= 604800:
+        if seconds <= 604800:
             return f"{seconds//86400}д."
-        else:
-            return "7д."  # сетка time_options ограничена 7 днями
+        return "7д."  # сетка time_options ограничена 7 днями
 
     def _parse_time_label(self, label):
         if label.endswith('с.'):
             return int(label[:-2])
-        elif label.endswith('м.'):
+        if label.endswith('м.'):
             return int(label[:-2]) * 60
-        elif label.endswith('ч.'):
+        if label.endswith('ч.'):
             return int(label[:-2]) * 3600
-        elif label.endswith('д.'):
+        if label.endswith('д.'):
             return int(label[:-2]) * 86400
-        elif label.endswith(' нед'):
+        if label.endswith(' нед'):
             return int(label[:-4]) * 604800
-        else:
-            try:
-                return int(label)
-            except Exception:
-                return 30
+        try:
+            return int(label)
+        except Exception:
+            return 30
 
     def update_time_label(self):
         main_window = self.window()
@@ -640,7 +641,7 @@ class SettingsScreenWidget(QWidget):
 
     def _update_configs_list(self):
         d = self._configs_dir()
-        self._configs = sorted([f for f in d.glob('*.json')])
+        self._configs = sorted(d.glob('*.json'))
         self._cfg_index = min(getattr(self, '_cfg_index', 0), max(0, len(self._configs)-1))
         self._update_cfg_label()
 
@@ -688,7 +689,7 @@ class SettingsScreenWidget(QWidget):
             return
         path = self._configs[self._cfg_index]
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = normalize_config(json.load(f))
         except Exception as e:
             InfoDialog(self, f"Ошибка загрузки: {e}").exec()

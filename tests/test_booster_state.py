@@ -1,3 +1,5 @@
+from collections import deque
+
 import pytest
 
 from BoostiFy.core.booster import SteamBooster
@@ -24,3 +26,20 @@ def test_appids_are_bounded_normalized_and_deduplicated():
     assert SteamBooster._normalize_appids(
         ["0010", 10, 0, -1, "bad", 2**32, 570]
     ) == ["10", "570"]
+
+
+def test_failure_reason_reads_deque_tail_without_slicing_error():
+    """Захваченный вывод демона — deque(maxlen), а он не поддерживает срезы.
+    Прежний captured[-3:] бросал TypeError, и причина провала не попадала в black_list."""
+
+    class FakeProc:
+        returncode = 2
+
+    proc = FakeProc()
+    proc._captured_lines = deque(
+        ["первая", "вторая", "FATAL ERROR: boom", "последняя"], maxlen=64
+    )
+    reason = SteamBooster("missing.exe")._failure_reason(proc)
+    assert reason.startswith("Exit code 2")
+    assert "последняя" in reason  # берём хвост из последних строк
+    assert "первая" not in reason  # и только последние три
