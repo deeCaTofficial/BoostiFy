@@ -477,7 +477,8 @@ class SettingsScreenWidget(QWidget):
         if enabled:
             confirm = CustomConfirmDialog(
                 self,
-                'Зацикленный режим будет повторно запускать сессии до ручной остановки. Включить?',
+                'Зацикленный режим будет повторно запускать сессии\n'
+                'до ручной остановки. Включить?',
                 'Включить',
                 'Отмена',
             )
@@ -509,7 +510,8 @@ class SettingsScreenWidget(QWidget):
         if enabled:
             confirm = CustomConfirmDialog(
                 self,
-                'После завершения буста список игр будет автоматически очищен. Включить?',
+                'После завершения буста обработанные игры\n'
+                'будут убраны из таблицы. Включить?',
                 'Включить',
                 'Отмена',
             )
@@ -526,7 +528,8 @@ class SettingsScreenWidget(QWidget):
             return
         confirm = CustomConfirmDialog(
             self,
-            'Удалить все игры из таблицы? Это действие нельзя отменить.',
+            'Удалить все игры из таблицы?\n'
+            'Это действие нельзя отменить.',
             'Удалить',
             'Отмена',
         )
@@ -578,7 +581,8 @@ class SettingsScreenWidget(QWidget):
     def _reset_statistics(self):
         dialog = CustomConfirmDialog(
             self,
-            'Сбросить всю накопленную статистику сеансов? Список игр и настройки не изменятся.',
+            'Сбросить всю накопленную статистику сеансов?\n'
+            'Список игр и настройки не изменятся.',
             'Сбросить',
             'Отмена',
         )
@@ -653,8 +657,8 @@ class SettingsScreenWidget(QWidget):
         # вручную — из интерфейса он был недоступен вообще.
         confirm = CustomConfirmDialog(
             self,
-            'Очистить кэш каталога Steam и накопленные результаты?\n'
-            'Игры из чёрного списка снова станут доступны для буста.',
+            'Очистить кэш каталога игр и списки результатов?\n'
+            'Игры из чёрного списка снова станут доступны.',
             'Очистить',
             'Отмена',
         )
@@ -805,7 +809,13 @@ class SettingsScreenWidget(QWidget):
         if not self._runtime_available:
             InfoDialog(self, self._runtime_message or 'Steam runtime недоступен.').exec()
             return
-        dlg = CustomConfirmDialog(self, "Вы действительно хотите добавить все игры, которыми вы владеете? \nЭто может занять несколько минут!", "Да", "Нет")
+        dlg = CustomConfirmDialog(
+            self,
+            "Добавить все игры из вашей библиотеки Steam?\n"
+            "Это может занять несколько минут.",
+            "Да",
+            "Нет",
+        )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         main_window = self.window()

@@ -201,7 +201,8 @@ class MainWindow(QMainWindow):
         if self.unlock_achievements:
             confirm = CustomConfirmDialog(
                 self,
-                'Разблокировка достижений изменяет данные Steam и может быть необратимой. Продолжить?',
+                'Разблокировка достижений изменяет данные Steam.\n'
+                'Это может быть необратимо. Продолжить?',
                 'Продолжить',
                 'Отмена',
             )
