@@ -4,23 +4,37 @@ import threading
 import uuid
 from pathlib import Path
 
-from BoostiFy.core.app_paths import DATA_DIR, migrate_legacy_data
+from BoostiFy.core.app_paths import DATA_DIR, migrate_legacy_data, replace_with_retry
 
 DEFAULT_CONFIG = {
-    "concurrent_value": 15,
-    "duration_value": 900,
+    "concurrent_value": 60,
+    "duration_value": 30,
     "unlock_achievements": False,
-    "fast_paste_enabled": False,
+    "fast_paste_enabled": True,
     "time_mode": 0,
     "loop_boost": False,
     "table_visible_rows": 15,
     "auto_clean_table": False,
-    "launch_cd_from": 5,
-    "launch_cd_to": 35,
-    "finish_cd_from": 5,
-    "finish_cd_to": 35,
-    "slot_cd_from": 60,
-    "slot_cd_to": 90,
+    "launch_cd_from": 1,
+    "launch_cd_to": 6,
+    "finish_cd_from": 1,
+    "finish_cd_to": 6,
+    "slot_cd_from": 5,
+    "slot_cd_to": 10,
+}
+
+# Минимальный разрыв между «от» и «до» каждого КД: верхняя граница всегда
+# не меньше нижней + этого запаса, чтобы диапазон рандома не схлопывался в точку.
+MIN_CD_SPREAD = 5
+
+# Границы каждого КД: (нижняя_min, нижняя_max), (верхняя_min, верхняя_max).
+# Пол верхней границы = пол нижней + MIN_CD_SPREAD, иначе часть объявленного
+# диапазона недостижима: при поле «до» = 2 и разрыве 5 значения 2..5 выставить
+# нельзя было в принципе, и кнопка «-» ниже 6 просто переставала реагировать.
+CD_BOUNDS = {
+    "launch": ((1, 59), (1 + MIN_CD_SPREAD, 120)),
+    "finish": ((1, 59), (1 + MIN_CD_SPREAD, 120)),
+    "slot": ((5, 300), (5 + MIN_CD_SPREAD, 600)),
 }
 
 UPLOAD_DIR = str(DATA_DIR)
@@ -68,7 +82,7 @@ def _atomic_write_json(path, data):
                 json.dump(data, stream, ensure_ascii=False, indent=2)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, destination)
+            replace_with_retry(temporary, destination)
         finally:
             try:
                 temporary.unlink(missing_ok=True)
@@ -93,24 +107,27 @@ def _bounded_int(value, default, minimum, maximum):
 def normalize_config(config):
     source = config if isinstance(config, dict) else {}
     normalized = {
-        "concurrent_value": _bounded_int(source.get("concurrent_value"), 15, 1, 60),
-        "duration_value": _bounded_int(source.get("duration_value"), 900, 30, 604800),
+        "concurrent_value": _bounded_int(source.get("concurrent_value"), 60, 1, 60),
+        "duration_value": _bounded_int(source.get("duration_value"), 30, 30, 604800),
         "unlock_achievements": _as_bool(source.get("unlock_achievements"), False),
-        "fast_paste_enabled": _as_bool(source.get("fast_paste_enabled"), False),
+        "fast_paste_enabled": _as_bool(source.get("fast_paste_enabled"), True),
         "time_mode": _bounded_int(source.get("time_mode"), 0, 0, 1),
         "loop_boost": _as_bool(source.get("loop_boost"), False),
-        "table_visible_rows": _bounded_int(source.get("table_visible_rows"), 15, 5, 50),
+        "table_visible_rows": _bounded_int(source.get("table_visible_rows"), 15, 5, 20),
         "auto_clean_table": _as_bool(source.get("auto_clean_table"), False),
-        "launch_cd_from": _bounded_int(source.get("launch_cd_from"), 5, 1, 59),
-        "launch_cd_to": _bounded_int(source.get("launch_cd_to"), 35, 2, 120),
-        "finish_cd_from": _bounded_int(source.get("finish_cd_from"), 5, 1, 59),
-        "finish_cd_to": _bounded_int(source.get("finish_cd_to"), 35, 2, 120),
-        "slot_cd_from": _bounded_int(source.get("slot_cd_from"), 60, 5, 300),
-        "slot_cd_to": _bounded_int(source.get("slot_cd_to"), 90, 10, 600),
+        **{
+            f"{pair}_cd_{edge}": _bounded_int(
+                source.get(f"{pair}_cd_{edge}"), DEFAULT_CONFIG[f"{pair}_cd_{edge}"], low, high
+            )
+            for pair, bounds in CD_BOUNDS.items()
+            for edge, (low, high) in zip(("from", "to"), bounds, strict=True)
+        },
     }
-    normalized["launch_cd_to"] = max(normalized["launch_cd_from"], normalized["launch_cd_to"])
-    normalized["finish_cd_to"] = max(normalized["finish_cd_from"], normalized["finish_cd_to"])
-    normalized["slot_cd_to"] = max(normalized["slot_cd_from"], normalized["slot_cd_to"])
+    # Держим верхнюю границу не ближе MIN_CD_SPREAD к нижней (from_max + spread не
+    # превышает потолок «до» ни у одного КД, поэтому переполнения границы не будет).
+    normalized["launch_cd_to"] = max(normalized["launch_cd_from"] + MIN_CD_SPREAD, normalized["launch_cd_to"])
+    normalized["finish_cd_to"] = max(normalized["finish_cd_from"] + MIN_CD_SPREAD, normalized["finish_cd_to"])
+    normalized["slot_cd_to"] = max(normalized["slot_cd_from"] + MIN_CD_SPREAD, normalized["slot_cd_to"])
     return normalized
 
 

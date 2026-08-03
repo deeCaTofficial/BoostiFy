@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QMainWindow, QStackedWidget
 
+from BoostiFy.core.booster import normalize_appids
 from BoostiFy.core.runtime_paths import missing_runtime_files, runtime_is_ready
 from BoostiFy.GUI.core.game_storage import (
     DEFAULT_CONFIG,
@@ -90,8 +91,11 @@ class MainWindow(QMainWindow):
         self.main_screen.stop_boost_requested.connect(self.handle_stop_boost)
         self.settings_screen.settings_changed.connect(self.apply_settings_from_ui)
         
-        # Загрузка конфигурации
+        # Загрузка конфигурации. Сразу закрепляем нормализованный вид на диске: раньше
+        # зажатые значения жили только в памяти, а config.json хранил исходные, и то,
+        # что показывал интерфейс, расходилось с содержимым файла до первого сохранения.
         self.config = load_config()
+        save_config(self.config)
         self.concurrent_value = self.config.get('concurrent_value', DEFAULT_CONFIG['concurrent_value'])
         config_time = self.config.get('duration_value', DEFAULT_CONFIG['duration_value'])
         MIN_TIME_SECONDS = 30
@@ -99,22 +103,23 @@ class MainWindow(QMainWindow):
         self.unlock_achievements = self.config.get('unlock_achievements', DEFAULT_CONFIG['unlock_achievements'])
         self.fast_paste_enabled = self.config.get('fast_paste_enabled', DEFAULT_CONFIG['fast_paste_enabled'])
         self.time_mode = self.config.get('time_mode', DEFAULT_CONFIG['time_mode'])
-        self.loop_boost = self.config.get('loop_boost', False)
+        self.loop_boost = self.config.get('loop_boost', DEFAULT_CONFIG['loop_boost'])
         self._stop_requested = False
         self._stats_session_id = None
         self.launch_cd_range = (
-            self.config.get('launch_cd_from', 5),
-            self.config.get('launch_cd_to', 35)
+            self.config.get('launch_cd_from', DEFAULT_CONFIG['launch_cd_from']),
+            self.config.get('launch_cd_to', DEFAULT_CONFIG['launch_cd_to'])
         )
         self.finish_cd_range = (
-            self.config.get('finish_cd_from', 5),
-            self.config.get('finish_cd_to', 35)
+            self.config.get('finish_cd_from', DEFAULT_CONFIG['finish_cd_from']),
+            self.config.get('finish_cd_to', DEFAULT_CONFIG['finish_cd_to'])
         )
         self.slot_cd_range = (
-            self.config.get('slot_cd_from', 60),
-            self.config.get('slot_cd_to', 90)
+            self.config.get('slot_cd_from', DEFAULT_CONFIG['slot_cd_from']),
+            self.config.get('slot_cd_to', DEFAULT_CONFIG['slot_cd_to'])
         )
         self.main_screen.visible_rows = self.config.get('table_visible_rows', self.main_screen.visible_rows)
+        self.main_screen.apply_row_density()
 
         self.booster = self.main_screen.booster
         self.main_screen.boost_finished_signal.connect(self._on_boost_finished)
@@ -184,7 +189,12 @@ class MainWindow(QMainWindow):
         if self.booster.is_busy:
             InfoDialog(self, 'Предыдущая сессия ещё завершает процессы. Подождите несколько секунд.').exec()
             return
-        appids = [str(g.get('appid')) for g in self.main_screen.games if isinstance(g, dict) and g.get('appid')]
+        # Нормализуем тем же отбором, что применит booster: иначе дубликаты и мусорные
+        # строки в таблице расходились с фактическим числом игр, и статистика открывала
+        # сеанс с завышенным games_total, который заведомо не мог быть достигнут.
+        appids = normalize_appids(
+            g.get('appid') for g in self.main_screen.games if isinstance(g, dict)
+        )
         if not appids:
             InfoDialog(self, 'Список игр пуст. Сначала добавьте хотя бы одну игру.').exec()
             return
@@ -251,15 +261,33 @@ class MainWindow(QMainWindow):
     def _on_boost_finished(self):
         self.main_screen.finalize_session_statuses(stopped=self._stop_requested)
         self._finish_statistics_session(stopped=self._stop_requested)
-        if self.config.get('auto_clean_table', False):
-            self.main_screen.games = []
-            save_games([])
-            self.main_screen.update_game_list()
-            self.main_screen.update_time_label()
-            self.main_screen.set_boost_controls(False)
-            return
+        if self.config.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table']):
+            self._auto_clean_finished_games()
+        # Проверка зацикливания больше не за `return` авточистки: раньше эти две
+        # настройки молча конфликтовали и включённая авточистка глушила цикл.
         if self.loop_boost and not self._stop_requested and self.main_screen.games:
             QTimer.singleShot(1000, self.handle_start_boost)
+
+    def _auto_clean_finished_games(self):
+        """Убирает из таблицы только успешно обработанные игры.
+
+        Раньше здесь стоял save_games([]) — сносило ВЕСЬ список: и игры с ошибками,
+        и те, до которых очередь не дошла, и всё, что пользователь добавил про запас.
+        На библиотеке в тысячи игр это уничтожало результат многоминутного импорта
+        без единого предупреждения. Провалы теперь остаются в таблице — их видно и
+        можно перезапустить."""
+        games = self.main_screen.games
+        remaining = [
+            game for game in games
+            if not (isinstance(game, dict) and str(game.get('status', '')).startswith('Готово'))
+        ]
+        if len(remaining) == len(games):
+            return
+        self.main_screen.games = remaining
+        save_games(remaining)
+        self.main_screen.update_game_list()
+        self.main_screen.update_time_label()
+        self.main_screen.set_boost_controls(False)
 
     def _finish_statistics_session(self, *, stopped, interrupted=False):
         session_id = self._stats_session_id
@@ -302,12 +330,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Этот метод вызывается при закрытии окна."""
         self._stop_requested = True
-        add_task = getattr(self.main_screen, '_add_task', None)
-        if add_task is not None:
-            add_task.cancel()
-        cancel_add_all = getattr(self.settings_screen, 'cancel_background_operations', None)
-        if callable(cancel_add_all):
-            cancel_add_all()
+        # Оба экрана гасят свои фоновые задачи и отвязывают их сигналы: иначе
+        # запоздавший колбэк доходил до уже уничтоженных виджетов и ронял выход
+        # с «wrapped C/C++ object has been deleted».
+        for screen in (self.main_screen, self.settings_screen):
+            cancel = getattr(screen, 'cancel_background_operations', None)
+            if callable(cancel):
+                cancel()
         if hasattr(self, 'booster') and self.booster:
             # Останавливаем все процессы буста
             self.booster.stop_boost()

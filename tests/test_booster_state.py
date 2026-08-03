@@ -28,6 +28,23 @@ def test_appids_are_bounded_normalized_and_deduplicated():
     ) == ["10", "570"]
 
 
+def test_request_on_a_closed_server_reports_cleanly(monkeypatch):
+    """Сервер могли закрыть между проверкой и записью в stdin.
+
+    Раньше self._server_proc.stdin падало с AttributeError на None и выдавалось
+    пользователю за «Ошибку проверки Steam», хотя это гонка внутри приложения.
+    """
+    booster = SteamBooster("missing.exe")
+    monkeypatch.setattr(booster, "_ensure_server_running", lambda: True)
+    booster._server_proc = None  # другой поток успел выполнить shutdown_server()
+
+    assert booster._active_server() is None
+    for call in (lambda: booster.check_game_owned(570),
+                 lambda: booster.check_games_owned_batch(["570"])):
+        with pytest.raises(RuntimeError, match="остановлена"):
+            call()
+
+
 def test_failure_reason_reads_deque_tail_without_slicing_error():
     """Захваченный вывод демона — deque(maxlen), а он не поддерживает срезы.
     Прежний captured[-3:] бросал TypeError, и причина провала не попадала в black_list."""
@@ -40,6 +57,7 @@ def test_failure_reason_reads_deque_tail_without_slicing_error():
         ["первая", "вторая", "FATAL ERROR: boom", "последняя"], maxlen=64
     )
     reason = SteamBooster("missing.exe")._failure_reason(proc)
-    assert reason.startswith("Exit code 2")
+    # Причина теперь начинается с человеческого описания кода, а не с «Exit code N».
+    assert "не удалось сохранить достижения (код 2)" in reason
     assert "последняя" in reason  # берём хвост из последних строк
     assert "первая" not in reason  # и только последние три

@@ -28,5 +28,6 @@ jobs:
       - run: python -m ruff check .
       - run: python scripts/smoke_test.py
       - run: python scripts/functional_qa.py
+      - run: python scripts/stress_test.py
       - run: python BoostiFy/runtime/build.py
       - run: python scripts/smoke_test.py --require-runtime

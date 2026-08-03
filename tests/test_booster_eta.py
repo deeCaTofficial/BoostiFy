@@ -1,8 +1,25 @@
 from BoostiFy.core.booster import SteamBooster
+from BoostiFy.GUI.utils.helpers import estimate_boost_seconds
 
 # Задача слота: launch_cd -> игра (duration + finish_cd) -> slot_cd.
 # 12 часов при дефолтных кулдаунах (20 + 20 + 75).
 TASK = 43200 + 20 + 20 + 75
+
+
+def test_prestart_estimate_matches_running_eta_at_start():
+    """«Потребуется» до старта обязано совпадать с «Осталось» на первом тике буста.
+
+    Раньше предпросмотр считал ceil(games/slots)*duration и игнорировал кулдауны,
+    из-за чего число прыгало при запуске (напр. 1ч52м -> 9ч на 13446 играх). Обе
+    оценки теперь идут от одной модели задачи слота.
+    """
+    games, slots, duration = 13446, 60, 30
+    launch = finish = (5, 35)
+    slot = (60, 90)
+    task = duration + 20 + 20 + 75  # средние кулдауны
+    prestart = estimate_boost_seconds(games, slots, duration, launch, finish, slot)
+    running_at_start = SteamBooster._estimate_eta_seconds([], games, slots, task, now=0)
+    assert prestart == running_at_start
 
 
 def eta(slot_starts, queued, num_slots, now, task_seconds=TASK):

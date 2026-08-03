@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -314,9 +315,10 @@ def main():
             "statistics dashboard controls never overlap",
         )
         settings._set_section(0)
+        # Уменьшаем, а не увеличиваем: стандартное значение — 60 (потолок), и «+» был бы no-op.
         old_concurrent = window.concurrent_value
-        settings._pending_increment_games()
-        check(window.concurrent_value == old_concurrent + 1, "concurrent-games setting saves immediately")
+        settings._pending_decrement_games()
+        check(window.concurrent_value == old_concurrent - 1, "concurrent-games setting saves immediately")
         settings.unlock_achievements_btn.setChecked(True)
         settings._pending_toggle_unlock()
         check(window.unlock_achievements is True, "achievement toggle saves immediately")
@@ -326,10 +328,79 @@ def main():
         settings._pending_launch_cd_from = 50
         settings._pending_launch_cd_to = 10
         settings._normalize_cd_ranges()
-        check(settings._pending_launch_cd_to == 50, "professional cooldown ranges normalize safely")
+        check(settings._pending_launch_cd_to == 55, "professional cooldown ranges keep the minimum spread")
+
+        # Направленный разрыв: редактируем одну границу — следует другая.
+        settings._pending_finish_cd_from = 2
+        settings._pending_finish_cd_to = 6
+        settings._enforce_cd_gap('finish', 'from')
+        check(settings._pending_finish_cd_to == 7, "raising min pushes max to keep the 5s spread")
+        settings._pending_slot_cd_from = 20
+        settings._pending_slot_cd_to = 22
+        settings._enforce_cd_gap('slot', 'to')
+        check(settings._pending_slot_cd_from == 17, "lowering max pulls min to keep the 5s spread")
+
+        # --- Вкладка «Общее»: тумблер быстрого копирования, конфиги, очистка кэша ---
+        settings._set_section(0)
+        settings.btn_fast_copy_toggle.setChecked(True)
+        settings._pending_toggle_fast_copy()
+        check(window.fast_paste_enabled is True, "fast-copy toggle saves immediately")
+
+        cfg_dir = settings._configs_dir()
+        check(Path(temp_dir).resolve() in cfg_dir.resolve().parents,
+              "config profiles are stored inside the isolated data dir")
+        before = len(list(cfg_dir.glob('*.json')))
+        settings._pending_games_value = 42
+        settings._save_new_config()
+        check(len(list(cfg_dir.glob('*.json'))) == before + 1 and len(settings._configs) == before + 1,
+              "saving a config writes a new profile file")
+
+        settings._pending_games_value = 7
+        settings._cfg_index = len(settings._configs) - 1  # только что сохранённый профиль
+        settings._load_selected_config()
+        check(settings._pending_games_value == 42, "loading a config restores its saved values")
+
+        index_before = settings._cfg_index
+        settings._switch_config(1)
+        settings._switch_config(-1)
+        check(settings._cfg_index == index_before, "config prev/next returns to the same profile")
+
+        # Фоновая операция возвращает ровно то состояние кнопок, что было до неё.
+        settings.btn_cfg_load.setEnabled(False)
+        settings._set_background_busy(True)
+        settings._set_background_busy(False)
+        check(settings.btn_cfg_load.isEnabled() is False,
+              "background task restores the previous button state instead of enabling all")
+        settings.btn_cfg_load.setEnabled(True)
+
+        # Профили копились без возможности удалить их из интерфейса.
+        before_delete = len(settings._configs)
+        settings._delete_selected_config()
+        check(len(list(cfg_dir.glob('*.json'))) == before_delete - 1
+              and len(settings._configs) == before_delete - 1,
+              "deleting a config removes the profile file")
+
+        (Path(temp_dir) / 'games_upload.json').write_text('[]', encoding='utf-8')
+        black_list = Path(temp_dir) / 'black_list.json'
+        black_list.write_text('[{"appid": "570", "name": "Dota 2", "status": "err"}]', encoding='utf-8')
+        settings._on_clear_cache()
+        check(not (Path(temp_dir) / 'games_upload.json').exists(),
+              "clear-cache removes the app-list cache file")
+        # Единственный способ вернуть игру из чёрного списка — он обязан работать.
+        check(json.loads(black_list.read_text(encoding='utf-8')) == [],
+              "clear-cache also empties the blacklist so games become boostable again")
 
         settings._clear_table()
         check(main_screen.games == [], "clear-table action empties the user table")
+
+        # «Отрисовка таблицы» реально меняет плотность: меньше строк -> выше строка.
+        main_screen.visible_rows = 5
+        main_screen.apply_row_density()
+        tall_row = main_screen.game_table.verticalHeader().defaultSectionSize()
+        main_screen.visible_rows = 20
+        main_screen.apply_row_density()
+        short_row = main_screen.game_table.verticalHeader().defaultSectionSize()
+        check(tall_row > short_row, "table-render setting changes the row height (density)")
 
         created_boosters = []
 
@@ -380,6 +451,37 @@ def main():
             and settings.statistics_panel.snapshot.get("successful_games") == 3,
             "completed boost is persisted in statistics",
         )
+
+        # Авточистка убирает только успешные игры: провалы и необработанное остаются,
+        # иначе один прогон сносил бы весь многотысячный список без предупреждения.
+        window.config['auto_clean_table'] = True
+        main_screen.games = [
+            {'appid': '10', 'name': 'Done', 'status': 'Готово'},
+            {'appid': '20', 'name': 'Failed', 'status': 'Ошибка: не удалось сохранить достижения (код 2)'},
+            {'appid': '30', 'name': 'Untouched', 'status': 'Ожидание'},
+        ]
+        window._auto_clean_finished_games()
+        check([g['appid'] for g in main_screen.games] == ['20', '30'],
+              "auto-clean removes finished games but keeps failures and untouched ones")
+        check([g['appid'] for g in game_storage.load_games()] == ['20', '30'],
+              "auto-clean persists the surviving games")
+        window.config['auto_clean_table'] = False
+
+        # Мёртвые ловушки: stop_boost помечал бы все игры «Готово».
+        check(not hasattr(main_screen, 'start_boost') and not hasattr(main_screen, 'stop_boost'),
+              "dangerous unused start_boost/stop_boost helpers are gone")
+
+        # Одна «грязная» запись роняла завершение сессии и теряла все статусы.
+        main_screen.games = [{'appid': '10', 'name': 'ok', 'status': 'Ожидание'}, 'мусор']
+        main_screen.set_all_status('В очереди')
+        main_screen.finalize_session_statuses(stopped=False)
+        check(main_screen.games[0]['status'] == 'Не выполнено',
+              "malformed rows never break status finalization")
+        # Возвращаем корректный список: дальше идут проверки, ожидающие только словари.
+        main_screen.games = [
+            {'appid': '10', 'name': 'Alpha', 'status': 'Ожидание'},
+            {'appid': '20', 'name': 'Beta', 'status': 'Ожидание'},
+        ]
 
         main_screen.is_boosting = True
         window.handle_stop_boost()

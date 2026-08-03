@@ -1,16 +1,16 @@
 {
-  "concurrent_value": 15,
-  "duration_value": 900,
+  "concurrent_value": 60,
+  "duration_value": 30,
   "unlock_achievements": false,
-  "fast_paste_enabled": false,
+  "fast_paste_enabled": true,
   "time_mode": 0,
   "loop_boost": false,
   "table_visible_rows": 15,
   "auto_clean_table": false,
-  "launch_cd_from": 5,
-  "launch_cd_to": 35,
-  "finish_cd_from": 5,
-  "finish_cd_to": 35,
-  "slot_cd_from": 60,
-  "slot_cd_to": 90
+  "launch_cd_from": 1,
+  "launch_cd_to": 6,
+  "finish_cd_from": 1,
+  "finish_cd_to": 6,
+  "slot_cd_from": 5,
+  "slot_cd_to": 10
 }

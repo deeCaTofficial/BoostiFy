@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 1, 0, 0),
-    prodvers=(1, 1, 0, 0),
+    filevers=(1, 1, 1, 0),
+    prodvers=(1, 1, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'CLC corporation'),
           StringStruct('FileDescription', 'BoostiFy desktop application'),
-          StringStruct('FileVersion', '1.1.0'),
+          StringStruct('FileVersion', '1.1.1'),
           StringStruct('InternalName', 'BoostiFy'),
           StringStruct('LegalCopyright', 'Copyright (c) 2025-2026 deeCaT / CLC corporation'),
           StringStruct('OriginalFilename', 'BoostiFy.exe'),
           StringStruct('ProductName', 'BoostiFy'),
-          StringStruct('ProductVersion', '1.1.0')
+          StringStruct('ProductVersion', '1.1.1')
         ]
       )
     ]),

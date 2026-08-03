@@ -1,8 +1,28 @@
 import os
 import shutil
+import time
 from pathlib import Path
 
 APP_NAME = "BoostiFy"
+
+
+def replace_with_retry(source, destination, attempts=9, delay=0.05):
+    """os.replace с короткой серией повторов.
+
+    На Windows подмена файла падает с PermissionError (WinError 5), если целевой файл
+    в этот момент кто-то держит открытым — антивирус, индексатор поиска, резервное
+    копирование или параллельное чтение внутри самой программы. Сбой мгновенный и
+    транзиентный: без повторов запись просто терялась, и правки таблицы или настроек
+    молча не сохранялись.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = PACKAGE_ROOT.parent
 LEGACY_DATA_DIR = PACKAGE_ROOT / "upload"
