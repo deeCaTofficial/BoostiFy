@@ -1,6 +1,7 @@
 import threading
 import traceback
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal, pyqtSlot
 
 
@@ -23,15 +24,34 @@ class BackgroundTask(QRunnable):
     def cancel(self):
         self.cancel_event.set()
 
+    def _emit(self, name, *args):
+        """Отправляет сигнал по имени, переживая уничтожение своего QObject.
+
+        Задача живёт в пуле потоков и завершается уже после закрытия окна: к этому
+        моменту TaskSignals может быть уничтожен, и обращение к сигналу бросает
+        RuntimeError прямо в рабочем потоке. Раньше это исключение всплывало из
+        QRunnable.run и роняло выход («wrapped C/C++ object ... has been deleted»).
+        Имя, а не сам сигнал: доступ к атрибуту уничтоженного QObject падает ещё до
+        вызова, поэтому его тоже держим внутри try."""
+        signals = self.signals
+        try:
+            if sip.isdeleted(signals):
+                return
+            getattr(signals, name).emit(*args)
+        except RuntimeError:
+            pass  # QObject уничтожен между проверкой и отправкой
+
     @pyqtSlot()
     def run(self):
         try:
-            result = self.function(self.cancel_event, self.signals.progress.emit)
+            result = self.function(
+                self.cancel_event, lambda value: self._emit("progress", value)
+            )
         except Exception as error:
             if not isinstance(error, (ValueError, RuntimeError, FileNotFoundError)):
                 traceback.print_exc()
-            self.signals.error.emit(str(error) or error.__class__.__name__)
+            self._emit("error", str(error) or error.__class__.__name__)
         else:
-            self.signals.result.emit(result)
+            self._emit("result", result)
         finally:
-            self.signals.finished.emit()
+            self._emit("finished")

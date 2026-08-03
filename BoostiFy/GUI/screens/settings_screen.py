@@ -4,16 +4,20 @@ import json
 import time
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QProgressBar, QPushButton, QStackedWidget, QWidget
 
-from BoostiFy.core.booster import SteamBooster
+from BoostiFy.core.booster import SteamBooster, reset_result_lists
 from BoostiFy.core.runtime_paths import BACKGROUND_WORKER
 from BoostiFy.core.steam_lookup import SteamAppLookup
 from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import (
+    CD_BOUNDS,
     DEFAULT_CONFIG,
+    MIN_CD_SPREAD,
     UPLOAD_DIR,
+    _atomic_write_json,
     load_config,
     load_games,
     normalize_config,
@@ -22,7 +26,7 @@ from BoostiFy.GUI.core.game_storage import (
 )
 from BoostiFy.GUI.core.statistics_storage import load_statistics, reset_statistics
 from BoostiFy.GUI.screens.statistics_screen import StatisticsPanel
-from BoostiFy.GUI.utils.helpers import format_time_verbose
+from BoostiFy.GUI.utils.helpers import estimate_boost_seconds, format_time_verbose
 from BoostiFy.GUI.utils.styles import (
     BUTTON_STYLE,
     LABEL_AS_BUTTON_STYLE,
@@ -79,7 +83,7 @@ class SettingsScreenWidget(QWidget):
         # ====== Страница "Общее"
         page_general = QWidget()
         # Очистка кэша
-        self.btn_clear_cache = QPushButton("Очистить кэш", page_general)
+        self.btn_clear_cache = QPushButton("Очистить кэш и списки", page_general)
         self.btn_clear_cache.setGeometry(0, 0, 290, 45)
         self.btn_clear_cache.clicked.connect(self._on_clear_cache)
         # Быстрое копирование (toggle)
@@ -103,6 +107,10 @@ class SettingsScreenWidget(QWidget):
         self.btn_cfg_load = QPushButton("Загрузить конфиг", page_general)
         self.btn_cfg_load.setGeometry(300, 150, 290, 45)
         self.btn_cfg_load.clicked.connect(self._load_selected_config)
+        # Профили копились без возможности удалить их из интерфейса.
+        self.btn_cfg_delete = QPushButton("Удалить выбранный конфиг", page_general)
+        self.btn_cfg_delete.setGeometry(0, 225, 590, 45)
+        self.btn_cfg_delete.clicked.connect(self._delete_selected_config)
         for w in page_general.findChildren(QPushButton):
             if not w.isCheckable():
                 w.setStyleSheet(BUTTON_STYLE)
@@ -116,7 +124,7 @@ class SettingsScreenWidget(QWidget):
         QLabel("Параллельных игр", page_boost).setGeometry(0, 0, 410, 45)
         self.games_decrement_btn = QPushButton("-", page_boost)
         self.games_decrement_btn.setGeometry(425, 0, 45, 45)
-        self.games_value_label = QLabel("15", page_boost)
+        self.games_value_label = QLabel(str(DEFAULT_CONFIG['concurrent_value']), page_boost)
         self.games_value_label.setGeometry(485, 0, 45, 45)
         self.games_increment_btn = QPushButton("+", page_boost)
         self.games_increment_btn.setGeometry(545, 0, 45, 45)
@@ -250,20 +258,20 @@ class SettingsScreenWidget(QWidget):
         self.progress_bar.setTextVisible(True)
 
         # --- Текущие значения настроек
-        self._pending_games_value = 15
-        self._pending_time_value = 30
-        self._pending_unlock_achievements = False
-        self._pending_fast_copy = False
-        self._pending_time_mode = 0
-        self._pending_loop_boost = False
-        self._pending_table_rows = 15
-        self._pending_auto_clean_table = False
-        self._pending_launch_cd_from = 5
-        self._pending_launch_cd_to = 35
-        self._pending_finish_cd_from = 5
-        self._pending_finish_cd_to = 35
-        self._pending_slot_cd_from = 60
-        self._pending_slot_cd_to = 90
+        self._pending_games_value = DEFAULT_CONFIG['concurrent_value']
+        self._pending_time_value = DEFAULT_CONFIG['duration_value']
+        self._pending_unlock_achievements = DEFAULT_CONFIG['unlock_achievements']
+        self._pending_fast_copy = DEFAULT_CONFIG['fast_paste_enabled']
+        self._pending_time_mode = DEFAULT_CONFIG['time_mode']
+        self._pending_loop_boost = DEFAULT_CONFIG['loop_boost']
+        self._pending_table_rows = DEFAULT_CONFIG['table_visible_rows']
+        self._pending_auto_clean_table = DEFAULT_CONFIG['auto_clean_table']
+        self._pending_launch_cd_from = DEFAULT_CONFIG['launch_cd_from']
+        self._pending_launch_cd_to = DEFAULT_CONFIG['launch_cd_to']
+        self._pending_finish_cd_from = DEFAULT_CONFIG['finish_cd_from']
+        self._pending_finish_cd_to = DEFAULT_CONFIG['finish_cd_to']
+        self._pending_slot_cd_from = DEFAULT_CONFIG['slot_cd_from']
+        self._pending_slot_cd_to = DEFAULT_CONFIG['slot_cd_to']
 
         # Подключение событий (автосохранение)
         self.games_increment_btn.clicked.connect(self._pending_increment_games)
@@ -302,6 +310,8 @@ class SettingsScreenWidget(QWidget):
         self._update_configs_list()
         self._add_all_games_add_idx = 0
         self._add_all_task = None
+        self._buttons_disabled_for_task = []
+        self._closing = False
         self._runtime_available = True
         self._runtime_message = ''
         self._thread_pool = QThreadPool.globalInstance()
@@ -331,18 +341,18 @@ class SettingsScreenWidget(QWidget):
         self.update_time_label()
 
     def set_extra_values_from_config(self, config):
-        self._pending_loop_boost = config.get('loop_boost', False)
+        self._pending_loop_boost = config.get('loop_boost', DEFAULT_CONFIG['loop_boost'])
         self.loop_boost_btn.setChecked(self._pending_loop_boost)
-        self._pending_table_rows = config.get('table_visible_rows', 15)
+        self._pending_table_rows = config.get('table_visible_rows', DEFAULT_CONFIG['table_visible_rows'])
         self.table_rows_value_label.setText(str(self._pending_table_rows))
-        self._pending_auto_clean_table = config.get('auto_clean_table', False)
+        self._pending_auto_clean_table = config.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table'])
         self.auto_clean_btn.setChecked(self._pending_auto_clean_table)
-        self._pending_launch_cd_from = config.get('launch_cd_from', 5)
-        self._pending_launch_cd_to = config.get('launch_cd_to', 35)
-        self._pending_finish_cd_from = config.get('finish_cd_from', 5)
-        self._pending_finish_cd_to = config.get('finish_cd_to', 35)
-        self._pending_slot_cd_from = config.get('slot_cd_from', 60)
-        self._pending_slot_cd_to = config.get('slot_cd_to', 90)
+        self._pending_launch_cd_from = config.get('launch_cd_from', DEFAULT_CONFIG['launch_cd_from'])
+        self._pending_launch_cd_to = config.get('launch_cd_to', DEFAULT_CONFIG['launch_cd_to'])
+        self._pending_finish_cd_from = config.get('finish_cd_from', DEFAULT_CONFIG['finish_cd_from'])
+        self._pending_finish_cd_to = config.get('finish_cd_to', DEFAULT_CONFIG['finish_cd_to'])
+        self._pending_slot_cd_from = config.get('slot_cd_from', DEFAULT_CONFIG['slot_cd_from'])
+        self._pending_slot_cd_to = config.get('slot_cd_to', DEFAULT_CONFIG['slot_cd_to'])
         self._normalize_cd_ranges()
         self._refresh_cd_labels()
 
@@ -389,13 +399,43 @@ class SettingsScreenWidget(QWidget):
                 main_window.main_screen.visible_rows = self._pending_table_rows
                 main_window.main_screen.update_game_list()
 
+    # Границы берём из game_storage: там же ими пользуется normalize_config, и
+    # раньше два набора чисел разъезжались (в UI пол «до» был 2, а достижим 6).
+    _CD_BOUNDS = CD_BOUNDS
+
     def _normalize_cd_ranges(self):
-        if self._pending_launch_cd_from > self._pending_launch_cd_to:
-            self._pending_launch_cd_to = self._pending_launch_cd_from
-        if self._pending_finish_cd_from > self._pending_finish_cd_to:
-            self._pending_finish_cd_to = self._pending_finish_cd_from
-        if self._pending_slot_cd_from > self._pending_slot_cd_to:
-            self._pending_slot_cd_to = self._pending_slot_cd_from
+        # Массовая нормализация (загрузка конфига): нижняя граница главная, верхнюю
+        # подтягиваем до from + MIN_CD_SPREAD. Направленную правку делает _enforce_cd_gap.
+        for pair in self._CD_BOUNDS:
+            from_attr = f'_pending_{pair}_cd_from'
+            to_attr = f'_pending_{pair}_cd_to'
+            _, (_, hi_to) = self._CD_BOUNDS[pair]
+            setattr(
+                self,
+                to_attr,
+                min(hi_to, max(getattr(self, to_attr), getattr(self, from_attr) + MIN_CD_SPREAD)),
+            )
+
+    def _enforce_cd_gap(self, pair, edited):
+        """Держим верхнюю границу минимум на MIN_CD_SPREAD выше нижней.
+
+        Двигаем НЕ ту границу, которую редактировали: поднял «от» — «до» уезжает
+        вверх; опустил «до» — «от» уезжает вниз. Если следующая граница упёрлась в
+        свой предел, откатываем исходную, чтобы разрыв сохранился.
+        """
+        from_attr = f'_pending_{pair}_cd_from'
+        to_attr = f'_pending_{pair}_cd_to'
+        (lo_from, _), (_, hi_to) = self._CD_BOUNDS[pair]
+        cd_from = getattr(self, from_attr)
+        cd_to = getattr(self, to_attr)
+        if edited == 'to':
+            cd_from = max(lo_from, min(cd_from, cd_to - MIN_CD_SPREAD))
+            cd_to = min(hi_to, max(cd_to, cd_from + MIN_CD_SPREAD))
+        else:
+            cd_to = min(hi_to, max(cd_to, cd_from + MIN_CD_SPREAD))
+            cd_from = max(lo_from, min(cd_from, cd_to - MIN_CD_SPREAD))
+        setattr(self, from_attr, cd_from)
+        setattr(self, to_attr, cd_to)
 
     # -------------------- Обработчики Boost-страницы --------------------
     def _pending_increment_games(self):
@@ -453,7 +493,7 @@ class SettingsScreenWidget(QWidget):
 
     # -------------------- Таблица --------------------
     def _pending_increment_table_rows(self):
-        if self._pending_table_rows < 50:
+        if self._pending_table_rows < 20:
             self._pending_table_rows += 1
             self.table_rows_value_label.setText(str(self._pending_table_rows))
             self._save_extra_settings()
@@ -502,19 +542,13 @@ class SettingsScreenWidget(QWidget):
 
     # -------------------- Профессиональное (диапазоны КД) --------------------
     def _adjust_cd(self, kind: str, delta: int):
-        if kind == 'launch_from':
-            self._pending_launch_cd_from = max(1, min(59, self._pending_launch_cd_from + delta))
-        elif kind == 'launch_to':
-            self._pending_launch_cd_to = max(2, min(120, self._pending_launch_cd_to + delta))
-        elif kind == 'finish_from':
-            self._pending_finish_cd_from = max(1, min(59, self._pending_finish_cd_from + delta))
-        elif kind == 'finish_to':
-            self._pending_finish_cd_to = max(2, min(120, self._pending_finish_cd_to + delta))
-        elif kind == 'slot_from':
-            self._pending_slot_cd_from = max(5, min(300, self._pending_slot_cd_from + delta))
-        elif kind == 'slot_to':
-            self._pending_slot_cd_to = max(10, min(600, self._pending_slot_cd_to + delta))
-        self._normalize_cd_ranges()
+        pair, side = kind.rsplit('_', 1)
+        if pair not in self._CD_BOUNDS or side not in ('from', 'to'):
+            return
+        low, high = self._CD_BOUNDS[pair][0 if side == 'from' else 1]
+        attribute = f'_pending_{pair}_cd_{side}'
+        setattr(self, attribute, max(low, min(high, getattr(self, attribute) + delta)))
+        self._enforce_cd_gap(pair, side)
         self._refresh_cd_labels()
         self._save_extra_settings()
 
@@ -598,8 +632,11 @@ class SettingsScreenWidget(QWidget):
         MIN_TIME_SECONDS = 30
         if duration < MIN_TIME_SECONDS:
             duration = MIN_TIME_SECONDS
-        num_batches = (count + batch - 1) // batch
-        total_seconds = num_batches * duration
+        # Живой предпросмотр по редактируемым (pending) кулдаунам — та же модель, что и в booster.
+        launch_cd = (self._pending_launch_cd_from, self._pending_launch_cd_to)
+        finish_cd = (self._pending_finish_cd_from, self._pending_finish_cd_to)
+        slot_cd = (self._pending_slot_cd_from, self._pending_slot_cd_to)
+        total_seconds = estimate_boost_seconds(count, batch, duration, launch_cd, finish_cd, slot_cd)
         if count == 0:
             text = "Добавьте игры для буста."
         else:
@@ -611,6 +648,18 @@ class SettingsScreenWidget(QWidget):
         self.progress_bar.setTextVisible(True)
 
     def _on_clear_cache(self):
+        # Чистим и накопленные результаты: чёрный список навсегда исключает игру из
+        # будущих сессий, а до этого сбросить его можно было только правкой JSON
+        # вручную — из интерфейса он был недоступен вообще.
+        confirm = CustomConfirmDialog(
+            self,
+            'Очистить кэш каталога Steam и накопленные результаты?\n'
+            'Игры из чёрного списка снова станут доступны для буста.',
+            'Очистить',
+            'Отмена',
+        )
+        if confirm.exec() != QDialog.DialogCode.Accepted:
+            return
         upload_dir = Path(UPLOAD_DIR)
         removed = []
         for name in ['games_upload.json']:
@@ -621,6 +670,7 @@ class SettingsScreenWidget(QWidget):
                     removed.append(name)
                 except Exception:
                     pass
+        removed.extend(reset_result_lists(upload_dir))
         main_screen = getattr(self.window(), 'main_screen', None)
         lookup = getattr(main_screen, 'app_lookup', None)
         if lookup is not None:
@@ -629,9 +679,9 @@ class SettingsScreenWidget(QWidget):
             if callable(rebuild_index):
                 rebuild_index()
         if removed:
-            InfoDialog(self, f"Удалено: {', '.join(removed)}").exec()
+            InfoDialog(self, f"Очищено: {', '.join(removed)}").exec()
         else:
-            InfoDialog(self, "Кэш уже пуст.").exec()
+            InfoDialog(self, "Кэш и списки результатов уже пусты.").exec()
 
     # --------- Управление конфигами ---------
     def _configs_dir(self) -> Path:
@@ -678,10 +728,34 @@ class SettingsScreenWidget(QWidget):
         d = self._configs_dir()
         ts = time.strftime('%Y%m%d_%H%M%S')
         path = d / f'config_{ts}_{time.time_ns() % 1_000_000:06d}.json'
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # Атомарно, как и остальные файлы проекта: обычный open/write оставлял битый
+        # профиль, если запись обрывалась.
+        _atomic_write_json(path, data)
         self._update_configs_list()
+        # Показываем только что сохранённый профиль, иначе селектор остаётся на старом.
+        if path in self._configs:
+            self._cfg_index = self._configs.index(path)
+            self._update_cfg_label()
         InfoDialog(self, f"Сохранено: {path.name}").exec()
+
+    def _delete_selected_config(self):
+        if not self._configs:
+            self._update_configs_list()
+            InfoDialog(self, 'Сохранённых конфигов нет.').exec()
+            return
+        path = self._configs[self._cfg_index]
+        confirm = CustomConfirmDialog(
+            self, f'Удалить конфиг {path.name}?', 'Удалить', 'Отмена'
+        )
+        if confirm.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            path.unlink()
+        except OSError as error:
+            InfoDialog(self, f'Не удалось удалить конфиг: {error}').exec()
+            return
+        self._update_configs_list()
+        InfoDialog(self, f'Удалено: {path.name}').exec()
 
     def _load_selected_config(self):
         if not self._configs:
@@ -703,18 +777,18 @@ class SettingsScreenWidget(QWidget):
             data.get('time_mode', DEFAULT_CONFIG['time_mode']),
         )
         # Дополнительные
-        self._pending_loop_boost = data.get('loop_boost', False)
+        self._pending_loop_boost = data.get('loop_boost', DEFAULT_CONFIG['loop_boost'])
         self.loop_boost_btn.setChecked(self._pending_loop_boost)
-        self._pending_table_rows = data.get('table_visible_rows', 15)
+        self._pending_table_rows = data.get('table_visible_rows', DEFAULT_CONFIG['table_visible_rows'])
         self.table_rows_value_label.setText(str(self._pending_table_rows))
-        self._pending_auto_clean_table = data.get('auto_clean_table', False)
+        self._pending_auto_clean_table = data.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table'])
         self.auto_clean_btn.setChecked(self._pending_auto_clean_table)
-        self._pending_launch_cd_from = data.get('launch_cd_from', 5)
-        self._pending_launch_cd_to = data.get('launch_cd_to', 35)
-        self._pending_finish_cd_from = data.get('finish_cd_from', 5)
-        self._pending_finish_cd_to = data.get('finish_cd_to', 35)
-        self._pending_slot_cd_from = data.get('slot_cd_from', 60)
-        self._pending_slot_cd_to = data.get('slot_cd_to', 90)
+        self._pending_launch_cd_from = data.get('launch_cd_from', DEFAULT_CONFIG['launch_cd_from'])
+        self._pending_launch_cd_to = data.get('launch_cd_to', DEFAULT_CONFIG['launch_cd_to'])
+        self._pending_finish_cd_from = data.get('finish_cd_from', DEFAULT_CONFIG['finish_cd_from'])
+        self._pending_finish_cd_to = data.get('finish_cd_to', DEFAULT_CONFIG['finish_cd_to'])
+        self._pending_slot_cd_from = data.get('slot_cd_from', DEFAULT_CONFIG['slot_cd_from'])
+        self._pending_slot_cd_to = data.get('slot_cd_to', DEFAULT_CONFIG['slot_cd_to'])
         self._normalize_cd_ranges()
         self._refresh_cd_labels()
         self._emit_current_settings()
@@ -790,6 +864,8 @@ class SettingsScreenWidget(QWidget):
         self._thread_pool.start(task)
 
     def _on_add_all_progress(self, progress):
+        if not self._ui_is_available():
+            return
         checked = int(progress.get('checked', 0))
         total = max(1, int(progress.get('total', 1)))
         percent = max(0, min(100, int(100 * checked / total)))
@@ -799,6 +875,8 @@ class SettingsScreenWidget(QWidget):
         )
 
     def _on_add_all_result(self, result):
+        if not self._ui_is_available():
+            return
         if not isinstance(result, dict):
             return
         if result.get('cancelled'):
@@ -816,25 +894,61 @@ class SettingsScreenWidget(QWidget):
         InfoDialog(self, f'Добавлено игр: {added}. Дубликаты автоматически пропущены.').exec()
 
     def _on_add_all_error(self, message):
+        if not self._ui_is_available():
+            return
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat('Операция завершилась с ошибкой.')
         InfoDialog(self, f'Не удалось добавить игры: {message}').exec()
 
     def _on_add_all_finished(self):
+        if not self._ui_is_available():
+            return
         self._add_all_task = None
         self._set_background_busy(False)
         self.btn_add_all_games.setText('Добавить все игры')
         self.btn_add_all_games.setEnabled(self._runtime_available)
 
     def _set_background_busy(self, busy):
-        for button in self.findChildren(QPushButton):
-            if button is not self.btn_add_all_games:
-                button.setEnabled(not busy)
+        """Блокирует кнопки на время фоновой операции и возвращает ровно то состояние,
+        которое было до неё. Прежняя версия по завершении включала ВСЕ кнопки подряд,
+        то есть могла «оживить» те, что были отключены по другой причине."""
+        if not self._ui_is_available():
+            return
+        if busy:
+            self._buttons_disabled_for_task = [
+                button for button in self.findChildren(QPushButton)
+                if button is not self.btn_add_all_games and button.isEnabled()
+            ]
+            for button in self._buttons_disabled_for_task:
+                button.setEnabled(False)
+        else:
+            for button in self._buttons_disabled_for_task:
+                if not sip.isdeleted(button):
+                    button.setEnabled(True)
+            self._buttons_disabled_for_task = []
         self.btn_add_all_games.setEnabled(True)
 
+    def _ui_is_available(self):
+        return not self._closing and not sip.isdeleted(self)
+
     def cancel_background_operations(self):
-        if self._add_all_task is not None:
-            self._add_all_task.cancel()
+        self._closing = True
+        task = self._add_all_task
+        self._add_all_task = None
+        self._buttons_disabled_for_task = []
+        if task is None:
+            return
+        task.cancel()
+        for signal, callback in (
+            (task.signals.progress, self._on_add_all_progress),
+            (task.signals.result, self._on_add_all_result),
+            (task.signals.error, self._on_add_all_error),
+            (task.signals.finished, self._on_add_all_finished),
+        ):
+            try:
+                signal.disconnect(callback)
+            except (TypeError, RuntimeError):
+                pass
 
     def set_runtime_available(self, available, message=''):
         self._runtime_available = bool(available)

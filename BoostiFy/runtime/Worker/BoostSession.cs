@@ -6,6 +6,17 @@ namespace Boostify.Runtime.Worker
 {
     internal static class BoostSession
     {
+        // Контракт кодов возврата (его же разбирает booster.py):
+        //   0   — успех
+        //   2   — достижения не сохранились (проблема сервиса/среды, НЕ самой игры)
+        //   3   — игра недоступна для буста: Steam не принял её AppID
+        //   101 — Steam не найден в реестре
+        //  -1   — Steam API не поднялся (закрыт/перезапускается) — временный сбой
+        // Только код 3 означает воспроизводимую проблему конкретной игры, поэтому
+        // лишь он приводит к попаданию в чёрный список на стороне GUI.
+        private const int GameUnavailableExitCode = 3;
+        private const int AchievementFailureExitCode = 2;
+
         public static int Run(WorkerOptions options)
         {
             if (options.AppId == 0)
@@ -18,6 +29,7 @@ namespace Boostify.Runtime.Worker
             }
 
             WorkerLog.Emit(LogLevel.Info, options.AppId, "Process started.");
+            var achievementIssue = false;
             try
             {
                 using (var session = SteamSession.Open(options.AppId))
@@ -52,14 +64,23 @@ namespace Boostify.Runtime.Worker
                         {
                             return 0;
                         }
-                        if (IsFailure(result))
+
+                        // Проблема с достижениями больше НЕ обрывает сессию: часть
+                        // достижений уже сохранена, а игре всё ещё нужно доиграть свой
+                        // таймер. Раньше здесь стоял ранний return 2 — игра теряла и
+                        // оставшееся время активности, и попадала в чёрный список.
+                        achievementIssue = IsFailure(result);
+                        if (achievementIssue)
                         {
-                            return 2;
+                            WorkerLog.Emit(
+                                LogLevel.Warning,
+                                options.AppId,
+                                "Achievements were not stored. Continuing activity emulation.");
                         }
 
                         if (options.ExitAfterSeconds == 0)
                         {
-                            return 0;
+                            return achievementIssue ? AchievementFailureExitCode : 0;
                         }
 
                         WorkerLog.Emit(
@@ -95,6 +116,19 @@ namespace Boostify.Runtime.Worker
                     return 101;
                 }
 
+                // Steam не принял AppID — единственный отказ, относящийся к самой игре
+                // (её нет в аккаунте либо AppID неверный). Отделяем его от временных
+                // сбоев, чтобы в чёрный список уходила только она.
+                if (exception.Failure == SteamAccessFailure.AppIdMismatch)
+                {
+                    WorkerLog.Emit(
+                        LogLevel.Error,
+                        options.AppId,
+                        "Steam rejected this AppID. The game is probably not on the account.");
+                    WorkerLog.Fatal($"[GAME UNAVAILABLE] {exception}");
+                    return GameUnavailableExitCode;
+                }
+
                 WorkerLog.Emit(
                     LogLevel.Error,
                     options.AppId,
@@ -104,13 +138,15 @@ namespace Boostify.Runtime.Worker
             }
 
             WorkerLog.Emit(LogLevel.Success, options.AppId, "Process finished.");
-            return 0;
+            return achievementIssue ? AchievementFailureExitCode : 0;
         }
 
         private static bool IsFailure(AchievementOutcome result)
         {
+            // PartialFailure намеренно НЕ провал: часть достижений недоступна для
+            // разблокировки штатно (серверные, привязанные к статистике), и это
+            // нормальный исход, а не поломка игры.
             return result == AchievementOutcome.ServiceUnavailable ||
-                   result == AchievementOutcome.PartialFailure ||
                    result == AchievementOutcome.CommitFailed;
         }
     }

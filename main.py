@@ -3,6 +3,7 @@ import ctypes
 import os
 import sys
 import threading
+import traceback
 
 from BoostiFy.core.app_paths import LOG_DIR, ensure_app_directories
 from BoostiFy.GUI.core.game_storage import ensure_storage_ready
@@ -61,15 +62,62 @@ class Tee:
         self.sink = sink
 
     def write(self, text):
+        if not text:
+            return 0
         if self.console is not None:
-            self.console.write(text)
-            self.console.flush()
-        self.sink.write(text)
+            try:
+                self.console.write(text)
+                self.console.flush()
+            except (OSError, ValueError):
+                pass
+        try:
+            self.sink.write(text)
+        except (OSError, ValueError):
+            pass
+        return len(text)
 
     def flush(self):
         if self.console is not None:
-            self.console.flush()
-        self.sink.flush()
+            try:
+                self.console.flush()
+            except (OSError, ValueError):
+                pass
+        try:
+            self.sink.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def handle_unhandled_exception(exc_type, exc_value, exc_tb):
+    """Log exceptions raised from Qt callbacks and stop without PyQt's qFatal abort."""
+    text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        sys.stderr.write(text)
+        sys.stderr.flush()
+    except Exception:
+        fallback = sys.__stderr__
+        if fallback is not None:
+            try:
+                fallback.write(text)
+                fallback.flush()
+            except (OSError, ValueError):
+                pass
+
+    # PyQt aborts the process when a Python exception escapes a C++ callback and
+    # sys.excepthook is still the default one. With our hook installed we can
+    # request an orderly event-loop shutdown and preserve the traceback in the log.
+    try:
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.exit(1)
+    except Exception:
+        pass
+
+
+def install_exception_hook():
+    sys.excepthook = handle_unhandled_exception
 
 
 def configure_windows_app_id():
@@ -98,6 +146,7 @@ def configure_logging():
 def main():
     configure_windows_app_id()
     configure_logging()
+    install_exception_hook()
     try:
         ensure_storage_ready(migrate=True)
     except OSError as error:

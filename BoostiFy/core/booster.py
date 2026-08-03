@@ -12,7 +12,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from BoostiFy.core import process_group
-from BoostiFy.core.app_paths import DATA_DIR
+from BoostiFy.core.app_paths import DATA_DIR, replace_with_retry
 from BoostiFy.core.runtime_paths import BACKGROUND_WORKER, OWNERSHIP_WORKER
 
 BOOST_WORKER_PATH = str(BACKGROUND_WORKER)
@@ -30,6 +30,46 @@ if os.name == "nt":
     }
 elif os.name == "posix":
     _LOW_PRIORITY_KWARGS = {"preexec_fn": lambda: os.nice(10)}
+
+
+# Столько AppID принимает за раз C#-сервер (MaximumBatchSize в OwnershipProtocol.cs).
+SERVER_BATCH_LIMIT = 500
+
+# Коды возврата воркера. Успех: 0 и 42.
+SUCCESS_EXIT_CODES = frozenset({0, 42})
+# В чёрный список игра попадает ТОЛЬКО за собственную, воспроизводимую проблему.
+# Раньше туда уходил любой ненулевой код, поэтому единственный «моргнувший» Steam
+# (код -1) или отсутствие ключа в реестре (101) хоронили игру навсегда — при том,
+# что к самой игре это отношения не имеет.
+GAME_UNAVAILABLE_EXIT_CODE = 3
+PERMANENT_FAILURE_CODES = frozenset({GAME_UNAVAILABLE_EXIT_CODE})
+_EXIT_CODE_HINTS = {
+    -1: "Steam не ответил (не запущен или перезапускается)",
+    1: "неверные аргументы запуска воркера",
+    2: "не удалось сохранить достижения",
+    GAME_UNAVAILABLE_EXIT_CODE: "игра недоступна для буста (нет в аккаунте или неверный AppID)",
+    101: "Steam не найден в реестре Windows",
+}
+
+
+def signed_exit_code(code):
+    """Код возврата в знаковом виде.
+
+    Windows отдаёт его беззнаковым DWORD: воркер вернул -1, а subprocess показывает
+    4294967295. Без приведения таблица подсказок промахивалась мимо самого частого
+    сбоя («Steam не запущен»), и пользователь видел сырое число.
+    """
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return None
+    return code - 0x100000000 if code > 0x7FFFFFFF else code
+
+
+def describe_exit_code(code) -> str:
+    normalized = signed_exit_code(code)
+    hint = _EXIT_CODE_HINTS.get(normalized)
+    return f"{hint} (код {normalized})" if hint else f"exit code {normalized if normalized is not None else code}"
 
 
 def get_upload_dir():
@@ -54,12 +94,12 @@ def load_json_list(path):
 
 
 def _atomic_dump(path, data):
-    """Атомарная запись JSON: temp -> os.replace. Обрыв записи не оставит битый файл."""
+    """Атомарная запись JSON: temp -> replace с повторами. Обрыв не оставит битый файл."""
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     finally:
         if os.path.exists(tmp):
             try:
@@ -81,17 +121,86 @@ def build_name_map():
     return name_map
 
 
-def append_unique_status(list_path, lock, appid, name, status):
-    with lock:
-        items = load_json_list(list_path)
-        if any(
-            str(entry.get("appid")) == str(appid)
-            for entry in items
-            if isinstance(entry, dict)
-        ):
+class StatusListFile:
+    """Накопитель white/black-списка с буферизацией записи.
+
+    Прежний append_unique_status на КАЖДУЮ завершённую игру перечитывал и переписывал
+    весь файл целиком — это O(n²) по вводу-выводу: замер дал 1.5с на 200 записей,
+    25.5с на 1600, то есть ~30 минут чистого I/O на библиотеке в 13 тысяч игр, причём
+    под общим локом, сериализующим все слоты.
+
+    Теперь содержимое живёт в памяти (проверка дубликатов — O(1) по множеству), а на
+    диск сбрасывается не чаще раза в flush_interval секунд плюс принудительно в конце
+    сессии. Формат файла не меняется.
+    """
+
+    def __init__(self, path, flush_interval=5.0):
+        self.path = path
+        self._lock = threading.Lock()
+        self._items = load_json_list(path)
+        self._seen = {
+            str(entry.get("appid"))
+            for entry in self._items
+            if isinstance(entry, dict) and entry.get("appid") is not None
+        }
+        self._dirty = False
+        self._flush_interval = flush_interval
+        self._last_flush = time.monotonic()
+
+    def known_appids(self) -> set:
+        with self._lock:
+            return set(self._seen)
+
+    def add(self, appid, name, status) -> bool:
+        with self._lock:
+            key = str(appid)
+            if key in self._seen:
+                return False
+            self._items.append({"appid": key, "name": name, "status": status})
+            self._seen.add(key)
+            self._dirty = True
+            now = time.monotonic()
+            if now - self._last_flush >= self._flush_interval:
+                self._flush_locked(now)
+            return True
+
+    def flush(self):
+        with self._lock:
+            self._flush_locked(time.monotonic())
+
+    def _flush_locked(self, now):
+        if not self._dirty:
             return
-        items.append({"appid": str(appid), "name": name, "status": status})
-        _atomic_dump(list_path, items)
+        try:
+            _atomic_dump(self.path, self._items)
+        except OSError as error:
+            log_with_time("error", None, f"Не удалось записать {os.path.basename(self.path)}: {error}")
+            return
+        self._dirty = False
+        self._last_flush = now
+
+
+def reset_result_lists(directory=None):
+    """Очищает накопленные white/black списки и возвращает имена очищенных файлов.
+
+    Чёрный список — единственное, что НАВСЕГДА исключает игру из будущих сессий,
+    поэтому у пользователя обязан быть способ его сбросить (раньше его не было
+    нигде в интерфейсе, и одна разовая ошибка хоронила игру насовсем).
+
+    directory задаётся явно, чтобы вызывающий работал с тем же каталогом, что и
+    остальное хранилище: по умолчанию тут DATA_DIR, и тест с перенаправленным
+    хранилищем иначе стирал бы реальные пользовательские файлы."""
+    base = str(directory) if directory else get_upload_dir()
+    cleared = []
+    for name in ("black_list.json", "white_list.json"):
+        path = os.path.join(base, name)
+        try:
+            if os.path.isfile(path) and load_json_list(path):
+                _atomic_dump(path, [])
+                cleared.append(name)
+        except OSError:
+            continue
+    return cleared
 
 
 def get_timestamp():
@@ -144,9 +253,8 @@ class SteamBooster:
         self._server_responses = queue.Queue()
         self._server_stderr = queue.Queue()
 
-        self.white_list_lock = threading.Lock()
-        self.black_list_lock = threading.Lock()
-        self.no_achievements_lock = threading.Lock()
+        # Локи white/black-списков больше не нужны: синхронизацию держит сам
+        # StatusListFile, который создаётся на сессию в start_boost_sliding.
 
     @property
     def is_busy(self) -> bool:
@@ -257,9 +365,9 @@ class SteamBooster:
         duration_sec: int,
         status_callback: Callable | None = None,
         unlock_achievements: bool = False,
-        launch_cd_range=(5, 35),
-        finish_cd_range=(5, 35),
-        slot_cd_range=(60, 90),
+        launch_cd_range=(1, 6),
+        finish_cd_range=(1, 6),
+        slot_cd_range=(5, 10),
     ):
         appids = self._normalize_appids(appids)
         self.ensure_empty_lists()
@@ -274,17 +382,15 @@ class SteamBooster:
 
         num_slots = max(1, min(60, int(num_slots or 1)))
         duration_sec = max(30, min(604800, int(duration_sec or 30)))
-        launch_cd_range = self._normalize_range(launch_cd_range, 0, 120, (5, 35))
-        finish_cd_range = self._normalize_range(finish_cd_range, 0, 120, (5, 35))
-        slot_cd_range = self._normalize_range(slot_cd_range, 0, 600, (60, 90))
+        launch_cd_range = self._normalize_range(launch_cd_range, 0, 120, (1, 6))
+        finish_cd_range = self._normalize_range(finish_cd_range, 0, 120, (1, 6))
+        slot_cd_range = self._normalize_range(slot_cd_range, 0, 600, (5, 10))
         session_id, stop_event = self._begin_session()
 
-        # Чёрный список читаем один раз в множество (а не файл на каждую игру в воркере).
-        black_set = {
-            str(entry.get("appid"))
-            for entry in load_json_list(black_list_path)
-            if isinstance(entry, dict)
-        }
+        # Списки держим в памяти на всю сессию: один чтение-старт вместо файла на игру.
+        white_list = StatusListFile(white_list_path)
+        black_list = StatusListFile(black_list_path)
+        black_set = black_list.known_appids()
         # Имена игр читаем один раз (а не с диска на каждую завершённую игру).
         name_map = build_name_map()
 
@@ -338,6 +444,10 @@ class SteamBooster:
                 with self.games_done_lock:
                     self._slot_started_at[slot_id] = task_start_time
 
+                # Засчитываем игру обработанной, только если попытка реально состоялась.
+                # Раньше счётчик рос в finally безусловно, и при остановке прогресс
+                # скакал вверх за игры, которые ещё стояли на кулдауне запуска.
+                attempted = False
                 # Основная логика буста
                 try:
                     # Прерываемый сон: мгновенно выходит при остановке (а не спит до 35с).
@@ -364,15 +474,16 @@ class SteamBooster:
                         self._notify(status_callback, appid, "stopped")
                         break
 
+                    # Игра отработала свой цикл: результат есть, его можно засчитать.
+                    attempted = True
                     # Обработка результата (white/black list)
                     name = name_map.get(str(appid)) or str(appid)
-                    if proc.returncode == 0 or proc.returncode == 42:
+                    exit_code = signed_exit_code(proc.returncode)
+                    if exit_code in SUCCESS_EXIT_CODES:
                         self._notify(status_callback, appid, "done")
                         # --- Добавляем в white_list.json ---
                         try:
-                            append_unique_status(
-                                white_list_path, self.white_list_lock, appid, name, "OK"
-                            )
+                            white_list.add(appid, name, "OK")
                         except Exception as err:
                             log_with_time(
                                 "error",
@@ -380,40 +491,32 @@ class SteamBooster:
                                 f"[WHITELIST ERROR] Не удалось записать успех для AppID {appid}: {err}",
                             )
                     else:
-                        # --- Добавляем в black_list.json ---
-                        try:
-                            reason = self._failure_reason(proc)
-                            append_unique_status(
-                                black_list_path,
-                                self.black_list_lock,
-                                appid,
-                                name,
-                                reason,
-                            )
-                        except Exception as err:
-                            log_with_time(
-                                "error",
-                                appid,
-                                f"[BLACKLIST ERROR] Не удалось записать ошибку для AppID {appid}: {err}",
-                            )
-                        self._notify(status_callback, appid, f"error: exit code {proc.returncode}")
+                        # В чёрный список — только за собственную проблему игры. Сбой среды
+                        # (Steam закрыт, нет ключа в реестре, не сохранились достижения)
+                        # больше не хоронит игру навсегда: она просто помечается ошибкой
+                        # и будет повторена в следующей сессии.
+                        if exit_code in PERMANENT_FAILURE_CODES:
+                            try:
+                                black_list.add(appid, name, self._failure_reason(proc))
+                            except Exception as err:
+                                log_with_time(
+                                    "error",
+                                    appid,
+                                    f"[BLACKLIST ERROR] Не удалось записать ошибку для AppID {appid}: {err}",
+                                )
+                        self._notify(
+                            status_callback, appid, f"error: {describe_exit_code(proc.returncode)}"
+                        )
                     # Прерываемый межслотовый сон (а не time.sleep до 90с после остановки).
                     if stop_event.wait(random.uniform(*slot_cd_range)):
                         break
                 except Exception as e:
+                    # Исключение слота — это сбой окружения (не собран runtime, отказ
+                    # запуска процесса), а не приговор игре, поэтому в чёрный список
+                    # больше не пишем: иначе один общий сбой уносил туда всю очередь.
+                    attempted = True  # попытка была и о ней сообщено — она засчитывается
                     log_with_time("error", appid, f"Слот {slot_id} AppID {appid}: {e}")
-                    # --- Добавляем в black_list.json ---
-                    try:
-                        name = name_map.get(str(appid)) or str(appid)
-                        append_unique_status(
-                            black_list_path, self.black_list_lock, appid, name, str(e)
-                        )
-                    except Exception as err:
-                        log_with_time(
-                            "error",
-                            appid,
-                            f"[BLACKLIST ERROR] Не удалось записать ошибку для AppID {appid}: {err}",
-                        )
+                    self._notify(status_callback, appid, f"error: {e}")
                 finally:
                     # Процесс всегда убираем из словаря (успех/ошибка/исключение).
                     with self.lock:
@@ -421,7 +524,8 @@ class SteamBooster:
                     # Слот освободился — ETA пересчитается по новому расписанию.
                     with self.games_done_lock:
                         self._slot_started_at.pop(slot_id, None)
-                        self.games_done_count += 1
+                        if attempted:
+                            self.games_done_count += 1
                     appid_queue.task_done()
 
         worker_threads = []
@@ -478,6 +582,9 @@ class SteamBooster:
                 appid_queue.join()
                 for worker in worker_threads:
                     worker.join(timeout=5)
+                # Хвост буфера обязательно на диск: между сбросами он живёт только в памяти.
+                white_list.flush()
+                black_list.flush()
                 self._finish_session(session_id)
                 log_with_time("info", None, "Буст полностью завершен.")
                 self._notify(status_callback, "boost", "finished")
@@ -609,7 +716,7 @@ class SteamBooster:
     def _failure_reason(self, proc) -> str:
         """Причина провала: код выхода + последние строки вывода демона.
         Читает захваченный буфер (не pipe напрямую), чтобы не конкурировать с потоком-читателем."""
-        reason = f"Exit code {proc.returncode}"
+        reason = describe_exit_code(proc.returncode)
         reader = getattr(proc, "_reader_thread", None)
         if reader is not None:
             reader.join(timeout=2)
@@ -722,6 +829,19 @@ class SteamBooster:
                 break
             log_with_time("info", None, f"[SERVER STDERR] {line}")
 
+    def _active_server(self):
+        """Снимок живого процесса сервера под локом, либо None.
+
+        Обращаться к self._server_proc повторно нельзя: между _ensure_server_running()
+        и записью в stdin другой поток мог вызвать shutdown_server(), обнулив атрибут —
+        тогда self._server_proc.stdin падало с AttributeError на None и выдавалось за
+        «ошибку Steam», хотя это гонка внутри приложения."""
+        with self._server_lock:
+            process = self._server_proc
+        if process is None or process.poll() is not None or process.stdin is None:
+            return None
+        return process
+
     def check_game_owned(self, appid: int) -> bool:
         """Проверяет владение одной игрой через сервер. Блокирующий вызов."""
         try:
@@ -732,15 +852,19 @@ class SteamBooster:
             return False
         if not self._ensure_server_running():
             raise RuntimeError("Не удалось запустить проверку Steam. Убедитесь, что Steam запущен, а runtime собран.")
+        process = self._active_server()
+        if process is None:
+            raise RuntimeError("Проверка Steam остановлена. Повторите попытку.")
         try:
             with self._server_request_lock:
-                self._server_proc.stdin.write(f"{appid}\n")
-                self._server_proc.stdin.flush()
+                process.stdin.write(f"{appid}\n")
+                process.stdin.flush()
                 response = self._read_server_protocol_line(
                     {"OWNED", "NOT_OWNED", "INVALID"}, timeout=10
                 )
             return response == "OWNED"
-        except (queue.Empty, BrokenPipeError) as error:
+        # ValueError/OSError — запись в уже закрытый другим потоком stdin.
+        except (queue.Empty, BrokenPipeError, ValueError, OSError) as error:
             log_with_time(
                 "error",
                 appid,
@@ -756,17 +880,32 @@ class SteamBooster:
             raise RuntimeError(f"Ошибка проверки Steam: {e}") from e
 
     def check_games_owned_batch(self, appids: list[str]) -> list[str]:
-        """Проверяет владение списком игр через сервер. Блокирующий вызов."""
-        appids = self._normalize_appids(appids)[:500]
+        """Проверяет владение списком игр через сервер. Блокирующий вызов.
+
+        Список любой длины: он режется на пачки по SERVER_BATCH_LIMIT (столько же
+        принимает C#-сервер) и результаты склеиваются. Раньше здесь стоял срез
+        [:500] — всё сверх лимита молча пропадало, и игры выглядели «не купленными».
+        """
+        appids = self._normalize_appids(appids)
         if not appids:
             return []
+        owned = []
+        for offset in range(0, len(appids), SERVER_BATCH_LIMIT):
+            owned.extend(self._request_owned_batch(appids[offset:offset + SERVER_BATCH_LIMIT]))
+        return owned
+
+    def _request_owned_batch(self, appids: list[str]) -> list[str]:
+        """Один запрос-ответ к серверу для пачки не длиннее SERVER_BATCH_LIMIT."""
         if not self._ensure_server_running():
             raise RuntimeError("Не удалось запустить пакетную проверку Steam.")
+        process = self._active_server()
+        if process is None:
+            raise RuntimeError("Пакетная проверка Steam остановлена. Повторите попытку.")
         try:
             with self._server_request_lock:
                 command = f"BATCH {','.join(map(str, appids))}\n"
-                self._server_proc.stdin.write(command)
-                self._server_proc.stdin.flush()
+                process.stdin.write(command)
+                process.stdin.flush()
                 response = self._read_server_protocol_line({"OWNED"}, timeout=30)
             if response.startswith("OWNED"):
                 owned_str = response.replace("OWNED", "").strip()
@@ -774,7 +913,8 @@ class SteamBooster:
                     return []
                 return owned_str.split(",")
             return []
-        except (queue.Empty, BrokenPipeError) as error:
+        # ValueError/OSError — запись в уже закрытый другим потоком stdin.
+        except (queue.Empty, BrokenPipeError, ValueError, OSError) as error:
             log_with_time(
                 "error",
                 None,
@@ -826,3 +966,13 @@ class SteamBooster:
             fpath = os.path.join(upload_dir, fname)
             if not os.path.isfile(fpath):
                 _atomic_dump(fpath, [])
+
+
+def normalize_appids(appids):
+    """Публичная обёртка над отбором AppID, применяемым при старте буста.
+
+    Нужна GUI, чтобы статистика считала games_total по тому же набору, который
+    реально уйдёт в работу: раньше сеанс открывался по «сырому» списку из таблицы,
+    и дубликаты или мусорные строки расходились с фактическим числом игр.
+    """
+    return SteamBooster._normalize_appids(appids)

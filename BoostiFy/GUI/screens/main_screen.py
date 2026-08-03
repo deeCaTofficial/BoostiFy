@@ -1,5 +1,6 @@
 # main_screen.py — главный экран приложения
 
+from PyQt6 import sip
 from PyQt6.QtCore import QItemSelection, QItemSelectionModel, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QDialog, QProgressBar, QPushButton, QTableView, QWidget
@@ -10,7 +11,7 @@ from BoostiFy.core.steam_lookup import SteamAppLookup
 from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import DEFAULT_CONFIG, load_games, save_games
 from BoostiFy.GUI.screens.table_widget import GameTableModel
-from BoostiFy.GUI.utils.helpers import format_time_verbose
+from BoostiFy.GUI.utils.helpers import estimate_boost_seconds, format_time_verbose
 from BoostiFy.GUI.utils.styles import BUTTON_STYLE
 from BoostiFy.GUI.widgets.editable_label import EditableLabel
 from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
@@ -39,13 +40,14 @@ class MainScreenWidget(QWidget):
         self.sort_column = None
         self.sort_reverse = False
         self.scroll_offset = 0
-        self.row_height = 30
         self.header_height = 32
-        self.visible_rows = 13
+        self.min_row_height = 18
+        self.visible_rows = DEFAULT_CONFIG['table_visible_rows']
         self._runtime_available = True
         self._runtime_message = ""
         self._add_in_progress = False
         self._add_task = None
+        self._closing = False
         self._thread_pool = QThreadPool.globalInstance()
         self.max_scroll = 0
         # --- ЛОГОТИП НАД ПОИСКОМ ---
@@ -98,16 +100,7 @@ class MainScreenWidget(QWidget):
         self.game_table = QTableView(self)
         self.game_table.setModel(self.game_table_model)
         self.game_table.setGeometry(340, 45, 590, 420)
-        self.game_table.setStyleSheet('''
-            QTableView {
-                background-color: #232b36;
-                color: #e6e6e6;
-                border: none;
-                border-radius: 16px;
-                font-size: 18px;
-                padding: 8px;
-            }
-        ''')
+        self.game_table.setStyleSheet(self._table_stylesheet(18))
         self.game_table.horizontalHeader().setStretchLastSection(True)
         self.game_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.game_table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
@@ -238,6 +231,33 @@ class MainScreenWidget(QWidget):
             QTimer.singleShot(100, lambda: self.force_table_update())
         else:
             InfoDialog(self, 'Ни одна игра не выбрана для удаления!').exec()
+    def _table_stylesheet(self, font_px):
+        return f'''
+            QTableView {{
+                background-color: #232b36;
+                color: #e6e6e6;
+                border: none;
+                border-radius: 16px;
+                font-size: {font_px}px;
+                padding: 8px;
+            }}
+        '''
+
+    def apply_row_density(self):
+        """«Отрисовка таблицы»: высота строк подбирается так, чтобы visible_rows строк
+        помещалось в область таблицы. Меньше строк — крупнее строки и шрифт; больше —
+        мельче (и раньше появляется прокрутка). Шрифт масштабируем вместе с высотой,
+        чтобы текст не обрезался."""
+        if not hasattr(self, 'game_table') or not self.game_table:
+            return
+        rows = max(1, int(getattr(self, 'visible_rows', 15) or 15))
+        header = self.game_table.horizontalHeader()
+        header_h = header.height() if header.height() > 0 else self.header_height
+        available = max(self.min_row_height, self.game_table.height() - header_h)
+        row_h = max(self.min_row_height, available // rows)
+        self.game_table.verticalHeader().setDefaultSectionSize(row_h)
+        self.game_table.setStyleSheet(self._table_stylesheet(max(9, min(18, row_h - 7))))
+
     def update_game_list(self):
         if not hasattr(self, 'game_table') or not self.game_table:
             return
@@ -272,6 +292,7 @@ class MainScreenWidget(QWidget):
         self.game_table.setColumnWidth(1, 90)
         self.game_table.setColumnWidth(2, 290)
         self.game_table.setColumnWidth(3, 105)
+        self.apply_row_density()
         self.update_row_highlight()
         if not getattr(self, 'is_boosting', False):
             self.update_time_label()
@@ -287,6 +308,8 @@ class MainScreenWidget(QWidget):
     def force_table_update(self):
         self.force_table_update_signal.emit()
     def _force_table_update_slot(self):
+        if not self._ui_is_available():
+            return
         if hasattr(self, 'game_table') and self.game_table:
             self.game_table.update()
             self.game_table.repaint()
@@ -297,6 +320,8 @@ class MainScreenWidget(QWidget):
         self.set_game_status_signal.emit(str(appid), str(status))
 
     def _set_game_status_slot(self, appid, status):
+        if not self._ui_is_available():
+            return
         status = self._display_status(status)
         for game in self.games:
             if isinstance(game, dict) and str(game.get('appid')) == str(appid):
@@ -328,7 +353,8 @@ class MainScreenWidget(QWidget):
         """Ставит статус всем играм разом: один проход по памяти + одно сохранение + одна
         перерисовка вместо N (иначе O(n) записей файла и перерисовок на GUI-потоке)."""
         for g in self.games:
-            g['status'] = status
+            if isinstance(g, dict):
+                g['status'] = status
         save_games(self.games)
         self.game_table_model.layoutChanged.emit()
         self.force_table_update_signal.emit()
@@ -337,6 +363,10 @@ class MainScreenWidget(QWidget):
         terminal_prefixes = ('Готово', 'Ошибка:', 'Пропущено:', 'Остановлено')
         fallback = 'Остановлено' if stopped else 'Не выполнено'
         for game in self.games:
+            # isinstance-защита как и везде по коду: одна «грязная» запись в списке
+            # роняла завершение сессии (TypeError/AttributeError) и теряла статусы.
+            if not isinstance(game, dict):
+                continue
             status = str(game.get('status', ''))
             if not status.startswith(terminal_prefixes):
                 game['status'] = fallback
@@ -344,13 +374,11 @@ class MainScreenWidget(QWidget):
         self.game_table_model.layoutChanged.emit()
         self.force_table_update_signal.emit()
 
-    def start_boost(self):
-        self.is_boosting = True
-        self.set_all_status('Бустится')
-    def stop_boost(self):
-        self.is_boosting = False
-        self.set_all_status('Готово')
-        self.update_time_label()
+    # start_boost()/stop_boost() удалены: они никем не вызывались, а stop_boost помечал
+    # ВСЕ игры как «Готово», то есть выдал бы прерванную сессию за полностью успешную.
+    # Имена совпадали с SteamBooster.stop_boost и MainWindow.handle_stop_boost — ловушка
+    # при рефакторинге. Реальный жизненный цикл ведут set_boost_controls и
+    # finalize_session_statuses.
     def _reset_input(self):
         """Возвращает поле ввода и фильтр в исходное состояние (placeholder, пустой фильтр)."""
         self.editable_label.label.setText(self.editable_label.placeholder)
@@ -361,6 +389,8 @@ class MainScreenWidget(QWidget):
 
     def _reject_add(self, message):
         """Показывает сообщение об ошибке добавления и сбрасывает ввод."""
+        if not self._ui_is_available():
+            return
         InfoDialog(self, message).exec()
         self._reset_input()
 
@@ -419,8 +449,35 @@ class MainScreenWidget(QWidget):
         self._add_task = task
         self._thread_pool.start(task)
 
+    def _ui_is_available(self):
+        """Виджеты ещё живы и окно не закрывается.
+
+        Фоновая проверка владения блокируется до 10 секунд, поэтому её колбэки
+        регулярно приходят уже после закрытия окна. Без этой проверки они падали
+        с «wrapped C/C++ object has been deleted» — тем же классом ошибки, что и
+        в экране настроек."""
+        return not self._closing and not sip.isdeleted(self)
+
+    def cancel_background_operations(self):
+        """Отменяет проверку игры и отвязывает её сигналы перед закрытием окна."""
+        self._closing = True
+        task = self._add_task
+        self._add_task = None
+        if task is None:
+            return
+        task.cancel()
+        for signal, callback in (
+            (task.signals.result, self._on_game_resolved),
+            (task.signals.error, self._reject_add),
+            (task.signals.finished, self._on_add_finished),
+        ):
+            try:
+                signal.disconnect(callback)
+            except (TypeError, RuntimeError):
+                pass
+
     def _on_game_resolved(self, result):
-        if not result:
+        if not self._ui_is_available() or not result:
             return
         appid = str(result.get('appid', ''))
         name = str(result.get('name') or appid)
@@ -430,6 +487,8 @@ class MainScreenWidget(QWidget):
         self.add_game(appid, name)
 
     def _on_add_finished(self):
+        if not self._ui_is_available():
+            return
         self._add_task = None
         self._add_in_progress = False
         self.set_boost_controls(self.is_boosting)
@@ -477,8 +536,14 @@ class MainScreenWidget(QWidget):
         MIN_TIME_SECONDS = 30
         if duration < MIN_TIME_SECONDS:
             duration = MIN_TIME_SECONDS
-        num_batches = (count + batch - 1) // batch
-        total_seconds = num_batches * duration
+        # Кулдауны берём те же, что уйдут в booster, иначе оценка разойдётся с «Осталось».
+        launch_cd = getattr(window, 'launch_cd_range',
+                            (DEFAULT_CONFIG['launch_cd_from'], DEFAULT_CONFIG['launch_cd_to']))
+        finish_cd = getattr(window, 'finish_cd_range',
+                            (DEFAULT_CONFIG['finish_cd_from'], DEFAULT_CONFIG['finish_cd_to']))
+        slot_cd = getattr(window, 'slot_cd_range',
+                         (DEFAULT_CONFIG['slot_cd_from'], DEFAULT_CONFIG['slot_cd_to']))
+        total_seconds = estimate_boost_seconds(count, batch, duration, launch_cd, finish_cd, slot_cd)
         if count == 0:
             text = "Добавьте игры для буста."
         else:
@@ -593,6 +658,8 @@ class MainScreenWidget(QWidget):
         self.update_game_list()
 
     def update_progress_bar(self, progress_data: dict):
+        if not self._ui_is_available():
+            return
         if not isinstance(progress_data, dict):
             return
 
@@ -630,7 +697,11 @@ class MainScreenWidget(QWidget):
         return appid_str
 
     def reset_progress_bar(self):
-        save_games(self.games)
+        if not self._ui_is_available():
+            return
+        # save_games() отсюда убран: этот слот срабатывает первым по boost_finished_signal
+        # и записывал транзиентные статусы («Бустится»), которые сразу же перетирал
+        # finalize_session_statuses своей записью. Итоговое состояние сохраняет он.
         self.set_boost_controls(False)
         self.progress_bar.setValue(0)
         self.update_time_label()

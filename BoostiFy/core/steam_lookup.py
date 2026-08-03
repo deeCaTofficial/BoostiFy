@@ -6,14 +6,20 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from BoostiFy.core.app_paths import DATA_DIR
+from BoostiFy.core import app_paths
+from BoostiFy.core.app_paths import replace_with_retry
 
 STEAM_APPLIST_URL = "https://raw.githubusercontent.com/dgibbs64/SteamCMD-AppID-List/master/steamcmd_appid.json"
 
-UPLOAD_DIR = DATA_DIR
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_FILE = UPLOAD_DIR / "games_upload.json"
+def default_cache_file() -> Path:
+    """Путь к кэшу каталога, вычисляемый в момент вызова.
+
+    Раньше здесь на уровне модуля стояли `UPLOAD_DIR.mkdir(...)` и готовая
+    константа CACHE_FILE: каталог данных создавался от одного лишь импорта, а путь
+    намертво привязывался к состоянию app_paths на момент импорта — перенаправить
+    хранилище (тесты, портативный режим) уже было нельзя."""
+    return app_paths.DATA_DIR / "games_upload.json"
 
 
 def _normalize_name(name: str) -> str:
@@ -29,7 +35,7 @@ def _fold_name(name: str) -> str:
 class SteamAppLookup:
     def __init__(self, allow_fetch: bool = True, cache_file=None, initial_apps=None):
         self._load_lock = threading.Lock()
-        self.cache_file = Path(cache_file) if cache_file is not None else CACHE_FILE
+        self.cache_file = Path(cache_file) if cache_file is not None else default_cache_file()
         cached = self._normalize_apps_payload(initial_apps) if initial_apps is not None else self.load_cache()
         if cached is None and allow_fetch:
             cached = self.fetch_applist()
@@ -166,7 +172,7 @@ class SteamAppLookup:
         try:
             with temp_file.open("w", encoding="utf-8") as f:
                 json.dump(apps, f, ensure_ascii=False, indent=2)
-            temp_file.replace(self.cache_file)
+            replace_with_retry(temp_file, self.cache_file)
         except OSError as e:
             print(f"Не удалось обновить кеш Steam AppID: {e}")
         finally:
