@@ -22,6 +22,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Вывод держим в UTF-8: на CI stdout по умолчанию cp1252, и любой не-ASCII символ
+# (например, имя игры в тексте ошибки) обрушивал бы прогон UnicodeEncodeError.
+for stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="replace")
+
 
 def check(condition, message):
     if not condition:
@@ -58,9 +65,9 @@ def test_result_list_concurrency():
         writer.flush()
 
         stored = [entry["appid"] for entry in json.loads(path.read_text(encoding="utf-8"))]
-        check(len(stored) == len(set(stored)), "конкурентная запись не создаёт дубликатов")
-        check(sum(accepted) == len(stored), "принятые записи совпадают с содержимым файла")
-        check(writer.known_appids() == set(stored), "индекс в памяти совпадает с файлом")
+        check(len(stored) == len(set(stored)), "concurrent writes never create duplicates")
+        check(sum(accepted) == len(stored), "accepted entries match the file contents")
+        check(writer.known_appids() == set(stored), "in-memory index matches the file")
 
 
 def test_writes_survive_concurrent_readers():
@@ -110,9 +117,9 @@ def test_writes_survive_concurrent_readers():
         for thread in readers:
             thread.join(timeout=2)
 
-        check(not torn, "читатель никогда не видит недописанный файл")
-        check(not failures, f"ни одно сохранение не потеряно ({len(failures)} отказов)")
-        check(not list(Path(tmp).glob("*.tmp")), "временные файлы не остаются на диске")
+        check(not torn, "readers never observe a half-written file")
+        check(not failures, f"no save was lost ({len(failures)} failures)")
+        check(not list(Path(tmp).glob("*.tmp")), "temporary files never linger on disk")
 
 
 def test_corrupted_files_do_not_break_startup():
@@ -137,7 +144,7 @@ def test_corrupted_files_do_not_break_startup():
                 and isinstance(entries, list)
                 and config == game_storage.normalize_config(config)
                 and stats["total_sessions"] >= 0,
-                f"повреждённые данные #{index} не ломают загрузку",
+                f"corrupted payload #{index} never breaks loading",
             )
 
 
@@ -174,7 +181,7 @@ def test_statistics_invariants_hold():
                 and stats["total_runtime_seconds"] >= 0
             ):
                 broken.append(index)
-        check(not broken, "счётчики статистики согласованы на всех 60 сессиях")
+        check(not broken, "statistics counters stay consistent across 60 sessions")
 
 
 # --------------------------------------------------------------------------- #
@@ -216,14 +223,14 @@ def _run_session(booster, stub_appids, exit_code, slots):
         unlock_achievements=False,
         launch_cd_range=(0, 0), finish_cd_range=(0, 0), slot_cd_range=(0, 0),
     )
-    check(finished.wait(timeout=180), "сессия завершилась в отведённое время")
+    check(finished.wait(timeout=180), "session finishes within the allotted time")
     return statuses, progress
 
 
 def test_boost_lifecycle_with_real_processes():
     """Полный цикл буста: подменён только исполняемый файл воркера."""
     if os.name != "nt":
-        print("[SKIP] цикл буста с процессами проверяется только на Windows")
+        print("[SKIP] boost lifecycle with real processes runs on Windows only")
         return
 
     from BoostiFy.core import booster as booster_module
@@ -242,30 +249,30 @@ def test_boost_lifecycle_with_real_processes():
             )
 
             statuses, progress = _run_session(SteamBooster(str(stub)), appids, 0, slots=15)
-            check(set(statuses.values()) == {"done"}, "успешный прогон помечает все игры готовыми")
+            check(set(statuses.values()) == {"done"}, "successful run marks every game as done")
             check(len(json.loads((root / "white_list.json").read_text(encoding="utf-8"))) == len(appids),
-                  "успешные игры попадают в white_list")
+                  "successful games land in the white list")
             check(json.loads((root / "black_list.json").read_text(encoding="utf-8")) == [],
-                  "успешный прогон не наполняет чёрный список")
-            check(progress[-1]["games_done"] == len(appids), "прогресс доходит до полного числа игр")
+                  "successful run never fills the blacklist")
+            check(progress[-1]["games_done"] == len(appids), "progress reaches the full game count")
 
             statuses, _ = _run_session(SteamBooster(str(stub)), appids, 3, slots=15)
             check(len(json.loads((root / "black_list.json").read_text(encoding="utf-8"))) == len(appids),
-                  "отказ самой игры (код 3) заносится в чёрный список")
+                  "game-specific failure (code 3) is blacklisted")
             check(all("недоступна" in value for value in statuses.values()),
-                  "причина отказа объяснена человеческим языком")
+                  "failure reason is explained in plain language")
 
             statuses, _ = _run_session(SteamBooster(str(stub)), appids, 0, slots=15)
             check(all(value == "skipped: black list" for value in statuses.values()),
-                  "забаненные игры пропускаются в следующей сессии")
+                  "blacklisted games are skipped in the next session")
 
             for code in (2, 101):
                 (root / "black_list.json").write_text("[]", encoding="utf-8")
                 statuses, _ = _run_session(SteamBooster(str(stub)), appids[:20], code, slots=10)
                 check(json.loads((root / "black_list.json").read_text(encoding="utf-8")) == [],
-                      f"временный сбой (код {code}) не заносится в чёрный список")
+                      f"transient failure (code {code}) is not blacklisted")
                 check(all(value.startswith("error:") for value in statuses.values()),
-                      f"временный сбой (код {code}) помечается ошибкой")
+                      f"transient failure (code {code}) is reported as an error")
         finally:
             booster_module.get_upload_dir = original_upload_dir
 
@@ -273,7 +280,7 @@ def test_boost_lifecycle_with_real_processes():
 def test_stop_and_restart_cycles():
     """Быстрые остановки не должны оставлять зависшую сессию или потоки."""
     if os.name != "nt":
-        print("[SKIP] циклы остановки проверяются только на Windows")
+        print("[SKIP] stop/restart cycles run on Windows only")
         return
 
     from BoostiFy.core import booster as booster_module
@@ -297,10 +304,10 @@ def test_stop_and_restart_cycles():
                 )
                 time.sleep(0.2)
                 booster.stop_boost()
-                check(finished.wait(timeout=60), "остановленная сессия завершается без зависания")
-            check(not booster.is_busy, "после серии остановок состояние сброшено")
+                check(finished.wait(timeout=60), "stopped session shuts down without hanging")
+            check(not booster.is_busy, "state is clean after a series of stops")
             check(json.loads((root / "black_list.json").read_text(encoding="utf-8")) == [],
-                  "остановка пользователем не заносит игры в чёрный список")
+                  "a user stop never blacklists games")
 
             finished = threading.Event()
             booster.start_boost_sliding(
@@ -310,16 +317,16 @@ def test_stop_and_restart_cycles():
             )
             try:
                 booster.start_boost_sliding(["1"], 1, 30, None)
-                check(False, "повторный запуск отклоняется")
+                check(False, "a second start is rejected")
             except RuntimeError:
-                check(True, "повторный запуск отклоняется понятной ошибкой")
+                check(True, "a second start is rejected with a clear error")
             booster.stop_boost()
             finished.wait(timeout=60)
         finally:
             booster_module.get_upload_dir = original_upload_dir
 
     time.sleep(1.0)
-    check(threading.active_count() - baseline_threads <= 2, "потоки не утекают между сессиями")
+    check(threading.active_count() - baseline_threads <= 2, "threads do not leak between sessions")
 
 
 # --------------------------------------------------------------------------- #
@@ -384,16 +391,16 @@ def test_interface_survives_random_actions():
                 for pair, bounds in game_storage.CD_BOUNDS.items()
                 for edge, (low, high) in zip(("from", "to"), bounds, strict=True)
             ),
-            "кулдауны остаются в объявленных границах",
+            "cooldowns stay within the declared bounds",
         )
         check(
             all(
                 config[f"{pair}_cd_to"] - config[f"{pair}_cd_from"] >= game_storage.MIN_CD_SPREAD
                 for pair in game_storage.CD_BOUNDS
             ),
-            "минимальный разрыв кулдаунов сохраняется",
+            "the minimum cooldown spread is preserved",
         )
-        check(game_storage.normalize_config(config) == config, "конфиг на диске канонический")
+        check(game_storage.normalize_config(config) == config, "the config on disk is canonical")
 
         heights = {}
         for rows in range(5, 21):
@@ -401,9 +408,9 @@ def test_interface_survives_random_actions():
             screen.apply_row_density()
             heights[rows] = screen.game_table.verticalHeader().defaultSectionSize()
         check(all(heights[r] >= heights[r + 1] for r in range(5, 20)),
-              "плотность таблицы растёт монотонно")
+              "table density changes monotonically")
         check(all(height >= screen.min_row_height for height in heights.values()),
-              "строка таблицы не схлопывается ниже минимума")
+              "a table row never collapses below the minimum")
         window.close()
 
 
@@ -439,7 +446,7 @@ def test_late_callbacks_survive_window_teardown():
         task = BackgroundTask(lambda cancel_event, report: report("промежуточный результат"))
         sip.delete(task.signals)
         task.run()
-        check(True, "фоновая задача не падает, когда её сигналы уже уничтожены")
+        check(True, "background task survives its destroyed signals")
 
         window = main_window_module.MainWindow()
         screen, settings = window.main_screen, window.settings_screen
@@ -448,33 +455,33 @@ def test_late_callbacks_survive_window_teardown():
 
         window.close()  # closeEvent обязан погасить фоновые задачи обоих экранов
         check(screen._closing and settings._closing,
-              "закрытие окна помечает оба экрана закрывающимися")
+              "closing the window marks both screens as closing")
 
         # Точный сценарий из отчёта: кнопка уже уничтожена, а колбэк ещё придёт.
         sip.delete(tracked_buttons[0])
         settings._buttons_disabled_for_task = tracked_buttons
         settings._closing = False  # худший случай: флаг не выставлен, а виджет мёртв
         settings._set_background_busy(False)
-        check(True, "восстановление кнопок переживает уничтоженный виджет")
+        check(True, "button restore survives a destroyed widget")
         settings._closing = True
 
         late_calls = (
-            ("добавление игры завершилось", lambda: screen._on_add_finished()),
-            ("игра опозналась", lambda: screen._on_game_resolved({"appid": "570", "name": "Dota 2"})),
-            ("добавление отклонено", lambda: screen._reject_add("поздний отказ")),
-            ("статус игры обновился", lambda: screen._set_game_status_slot("570", "done")),
-            ("прогресс обновился", lambda: screen._update_progress_bar_slot(
+            ("add-game task finished", lambda: screen._on_add_finished()),
+            ("game resolved", lambda: screen._on_game_resolved({"appid": "570", "name": "Dota 2"})),
+            ("add rejected", lambda: screen._reject_add("поздний отказ")),
+            ("game status updated", lambda: screen._set_game_status_slot("570", "done")),
+            ("progress updated", lambda: screen._update_progress_bar_slot(
                 {"games_done": 1, "games_total": 2, "final_eta_sec": 5})),
-            ("таблица перерисовалась", lambda: screen._force_table_update_slot()),
-            ("прогресс сброшен", lambda: screen.reset_progress_bar()),
-            ("массовое добавление завершилось", lambda: settings._on_add_all_finished()),
-            ("массовое добавление отчиталось", lambda: settings._on_add_all_progress(
+            ("table repainted", lambda: screen._force_table_update_slot()),
+            ("progress reset", lambda: screen.reset_progress_bar()),
+            ("bulk add finished", lambda: settings._on_add_all_finished()),
+            ("bulk add reported progress", lambda: settings._on_add_all_progress(
                 {"checked": 1, "total": 2, "eta": 1})),
-            ("массовое добавление упало", lambda: settings._on_add_all_error("поздняя ошибка")),
+            ("bulk add failed", lambda: settings._on_add_all_error("поздняя ошибка")),
         )
         for description, call in late_calls:
             call()
-            check(True, f"поздний колбэк безопасен: {description}")
+            check(True, f"late callback is safe: {description}")
         app.processEvents()
 
 
@@ -504,12 +511,12 @@ def test_dialog_text_always_fits():
         ("Удалить все игры из таблицы? Это действие нельзя отменить.", "Удалить", "Отмена"),
         ("Удалить конфиг config_20260803_120000_123456.json?", "Удалить", "Отмена"),
     )
-    for message, yes_text, no_text in confirmations:
+    for index, (message, yes_text, no_text) in enumerate(confirmations, 1):
         dialog = CustomConfirmDialog(None, message, yes_text, no_text)
         label = dialog.label.geometry()
         needed = dialog.label.heightForWidth(label.width())
         check(needed <= label.height() and label.bottom() <= dialog.btn_yes.geometry().top(),
-              f"текст помещается в диалог подтверждения: {message.splitlines()[0][:34]}…")
+              f"text fits the confirm dialog #{index}")
 
     notices = (
         "Список игр пуст. Сначала добавьте хотя бы одну игру.",
@@ -518,12 +525,12 @@ def test_dialog_text_always_fits():
         "Нужно точное название. Возможно, вы искали: Counter-Strike 2 (AppID 730), "
         "Counter-Strike (AppID 10)",
     )
-    for message in notices:
+    for index, message in enumerate(notices, 1):
         dialog = InfoDialog(None, message)
         label = dialog.label.geometry()
         needed = dialog.label.heightForWidth(label.width())
         check(needed <= label.height() and label.bottom() <= dialog.btn_ok.geometry().top(),
-              f"текст помещается в информационное окно: {message.splitlines()[0][:34]}…")
+              f"text fits the notice dialog #{index}")
 
 
 def test_ownership_requests_race_with_shutdown():
@@ -566,7 +573,7 @@ def test_ownership_requests_race_with_shutdown():
         thread.start()
     for thread in threads:
         thread.join()
-    check(not unexpected, "гонка с остановкой сервера не даёт неожиданных исключений")
+    check(not unexpected, "racing the server shutdown raises nothing unexpected")
 
 
 def main():
@@ -581,7 +588,7 @@ def main():
     test_late_callbacks_survive_window_teardown()
     test_dialog_text_always_fits()
     test_ownership_requests_race_with_shutdown()
-    print(f"\n[OK] Нагрузочные проверки пройдены за {time.time() - started:.0f} с")
+    print(f"\n[OK] Stress checks passed in {time.time() - started:.0f} s")
     return 0
 
 
