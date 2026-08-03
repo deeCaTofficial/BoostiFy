@@ -214,7 +214,8 @@ class MainScreenWidget(QWidget):
             count = len(self.selected_rows)
             confirm = CustomConfirmDialog(
                 self,
-                f'Удалить выбранные игры ({count})? Это действие нельзя отменить.',
+                f'Удалить выбранные игры ({count})?\n'
+                'Это действие нельзя отменить.',
                 'Удалить',
                 'Отмена',
             )

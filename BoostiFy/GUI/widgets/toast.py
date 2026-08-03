@@ -81,6 +81,18 @@ class _BaseDraggableDialog(QDialog):
         self._drag_active = False
         super().mouseReleaseEvent(event)
 
+    def _label_padding_loss(self) -> int:
+        """Сколько пикселей ширины подписи съедают её собственные поля.
+
+        Таблица стилей диалога задаёт `padding`, и Qt применяет её ко всему поддереву,
+        поэтому под текст остаётся меньше, чем сама ширина виджета. Замеряем разницу
+        у живого виджета, а не берём число из стилей: так поправка останется верной,
+        если оформление когда-нибудь изменится."""
+        self.label.ensurePolished()
+        probe_width = 200
+        self.label.resize(probe_width, self.label.height() or 10)
+        return max(0, probe_width - self.label.contentsRect().width())
+
 
 class CustomConfirmDialog(_BaseDraggableDialog):
     """Диалог с двумя кнопками (Да/Нет)."""
@@ -136,10 +148,15 @@ class CustomConfirmDialog(_BaseDraggableDialog):
             (text_metrics.horizontalAdvance(line) for line in message.split('\n')),
             default=0,
         )
+        # Прибавляем то, что подпись теряет на собственных полях: `padding` из таблицы
+        # стилей диалога достаётся ей каскадом. Без этой поправки строка, под которую
+        # окно и рассчитано, не влезала буквально на несколько пикселей — и последнее
+        # слово уезжало на отдельную строку, оставляя некрасивую «сироту».
+        padding_loss = self._label_padding_loss()
         dialog_width = min(
             max(
                 min_w,
-                min(longest_line + 2 * margin, MAX_TEXT_DRIVEN_WIDTH),
+                min(longest_line + padding_loss + 2 * margin, MAX_TEXT_DRIVEN_WIDTH),
                 buttons_total + 2 * margin,
             ),
             max_w,
@@ -214,7 +231,9 @@ class InfoDialog(_BaseDraggableDialog):
         # Оцениваем ширину по самой длинной строке
         lines = message.split('\n')
         text_width = min(
-            max(fm.horizontalAdvance(line) for line in lines) + 40,  # + отступы
+            # +поля подписи, иначе строка, под которую подобрана ширина, не влезает
+            # на несколько пикселей и последнее слово уезжает на отдельную строку.
+            max(fm.horizontalAdvance(line) for line in lines) + 40 + self._label_padding_loss(),
             MAX_TEXT_DRIVEN_WIDTH,
         )
         w = min(max(text_width, min_w), max_w)
