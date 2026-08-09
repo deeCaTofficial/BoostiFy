@@ -14,6 +14,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # API rate limit and write update state into the real user data directory.
 os.environ["BOOSTIFY_NO_UPDATE_CHECK"] = "1"
 
+# GitHub Windows runners may expose cp1252 to Python. Russian diagnostics from a
+# Qt callback must never raise UnicodeEncodeError and abort the whole GUI test.
+for stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="replace")
+
 
 def check(condition, message):
     if not condition:
