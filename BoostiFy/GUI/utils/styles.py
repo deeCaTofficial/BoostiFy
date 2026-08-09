@@ -30,6 +30,23 @@ BUTTON_STYLE = f"""
     }}
 """
 
+# Кнопка главного действия: та же форма, что у обычной, но залитая акцентом.
+# Нужна там, где из двух кнопок одна очевидно основная и её стоит выделить —
+# иначе обе выглядят одинаково и выбор приходится вычитывать.
+ACCENT_BUTTON_STYLE = f"""
+    QPushButton {{
+        color: #ffffff;
+        font-family: '{FONT_FAMILY}';
+        font-size: {FONT_SIZE}px;
+        font-weight: 600;
+        background-color: {ACTIVE_COLOR};
+        border: none;
+        border-radius: {BORDER_RADIUS}px;
+    }}
+    QPushButton:hover {{ background-color: #35a9f6; }}
+    QPushButton:pressed {{ background-color: #1381cf; }}
+"""
+
 NAV_BUTTON_STYLE = BUTTON_STYLE + f"""
     QPushButton:checked {{
         color: white;

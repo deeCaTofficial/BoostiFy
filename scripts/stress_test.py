@@ -21,6 +21,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# No live GitHub request from a test run: it would be flaky, count against the
+# API rate limit and write update state into the real user data directory.
+os.environ["BOOSTIFY_NO_UPDATE_CHECK"] = "1"
 
 # Вывод держим в UTF-8: на CI stdout по умолчанию cp1252, и любой не-ASCII символ
 # (например, имя игры в тексте ошибки) обрушивал бы прогон UnicodeEncodeError.
@@ -237,9 +240,13 @@ def test_boost_lifecycle_with_real_processes():
     from BoostiFy.core.booster import SteamBooster
 
     original_upload_dir = booster_module.get_upload_dir
+    original_log_dir = booster_module.LOG_DIR
     with tempfile.TemporaryDirectory(prefix="boostify-stress-") as tmp:
         root = Path(tmp)
         booster_module.get_upload_dir = lambda: str(root)
+        # Журнал сбоев тоже уводим во временную папку: иначе прогон пишет в реальный
+        # каталог данных пользователя.
+        booster_module.LOG_DIR = root / "logs"
         try:
             stub = _write_worker_stub(root)
             appids = [str(i) for i in range(1, 61)]
@@ -259,8 +266,15 @@ def test_boost_lifecycle_with_real_processes():
             statuses, _ = _run_session(SteamBooster(str(stub)), appids, 3, slots=15)
             check(len(json.loads((root / "black_list.json").read_text(encoding="utf-8"))) == len(appids),
                   "game-specific failure (code 3) is blacklisted")
-            check(all("недоступна" in value for value in statuses.values()),
-                  "failure reason is explained in plain language")
+            check(all(value == "error" for value in statuses.values()),
+                  "the table gets a short status, not the whole reason")
+            # Подробности переехали из статуса в журнал сбоев — проверяем, что они там.
+            failure_log = booster_module.failure_log_path()
+            journal = failure_log.read_text(encoding="utf-8") if failure_log.exists() else ""
+            check("недоступна" in journal,
+                  "failure log explains the reason in plain language")
+            check(journal.count("AppID") >= len(appids),
+                  "failure log records every failed game")
 
             statuses, _ = _run_session(SteamBooster(str(stub)), appids, 0, slots=15)
             check(all(value == "skipped: black list" for value in statuses.values()),
@@ -271,10 +285,11 @@ def test_boost_lifecycle_with_real_processes():
                 statuses, _ = _run_session(SteamBooster(str(stub)), appids[:20], code, slots=10)
                 check(json.loads((root / "black_list.json").read_text(encoding="utf-8")) == [],
                       f"transient failure (code {code}) is not blacklisted")
-                check(all(value.startswith("error:") for value in statuses.values()),
+                check(all(value == "error" for value in statuses.values()),
                       f"transient failure (code {code}) is reported as an error")
         finally:
             booster_module.get_upload_dir = original_upload_dir
+            booster_module.LOG_DIR = original_log_dir
 
 
 def test_stop_and_restart_cycles():

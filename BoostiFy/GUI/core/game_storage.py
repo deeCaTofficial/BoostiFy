@@ -37,6 +37,12 @@ CD_BOUNDS = {
     "slot": ((5, 300), (5 + MIN_CD_SPREAD, 600)),
 }
 
+# Сколько строк показывать в таблице. Пол подняли с 5 до 10: на меньших значениях
+# строки разъезжались в полосы высотой под 73 px, и таблица переставала читаться
+# как список. Границы живут здесь же, что и CD_BOUNDS, — ими пользуются и
+# normalize_config, и кнопки «+»/«-» на вкладке настроек.
+TABLE_ROWS_BOUNDS = (10, 20)
+
 UPLOAD_DIR = str(DATA_DIR)
 USER_GAMES_FILE = str(DATA_DIR / "user_games.json")
 CONFIG_FILE = str(DATA_DIR / "config.json")
@@ -113,7 +119,11 @@ def normalize_config(config):
         "fast_paste_enabled": _as_bool(source.get("fast_paste_enabled"), True),
         "time_mode": _bounded_int(source.get("time_mode"), 0, 0, 1),
         "loop_boost": _as_bool(source.get("loop_boost"), False),
-        "table_visible_rows": _bounded_int(source.get("table_visible_rows"), 15, 5, 20),
+        "table_visible_rows": _bounded_int(
+            source.get("table_visible_rows"),
+            DEFAULT_CONFIG["table_visible_rows"],
+            *TABLE_ROWS_BOUNDS,
+        ),
         "auto_clean_table": _as_bool(source.get("auto_clean_table"), False),
         **{
             f"{pair}_cd_{edge}": _bounded_int(

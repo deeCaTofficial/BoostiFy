@@ -1,6 +1,6 @@
 [project]
 name = "BoostiFy"
-version = "1.1.1"
+version = "1.1.2"
 description = "Windows desktop application for managing Steam activity and achievements."
 requires-python = ">=3.14"
 authors = [{ name = "deeCaT" }]

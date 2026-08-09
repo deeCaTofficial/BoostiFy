@@ -1,10 +1,12 @@
 # toast.py — виджеты для диалоговых окон
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import QDialog, QLabel, QPushButton
 
 from BoostiFy.GUI.utils.styles import (
+    ACCENT_BUTTON_STYLE,
+    ACTIVE_COLOR,
     BG_COLOR,
     BORDER_RADIUS,
     BUTTON_STYLE,
@@ -192,6 +194,108 @@ class CustomConfirmDialog(_BaseDraggableDialog):
             width_no,
             button_height,
         )
+
+def _display_version(value) -> str:
+    """'v1.1.3' -> '1.1.3'. В интерфейсе тег репозитория ни к чему."""
+    text = str(value or "").strip()
+    return text[1:] if text[:1].lower() == "v" else text
+
+
+class UpdateDialog(_BaseDraggableDialog):
+    """Сообщение о новой версии со ссылкой на GitHub.
+
+    Размеры фиксированные, а не подобранные под текст, как у остальных диалогов:
+    здесь текст известен заранее и не зависит от того, что произошло, — окно можно
+    собрать сразу правильным и не тратить место на запас под чужую строку.
+    """
+
+    WIDTH = 470
+    HEIGHT = 254
+    ICON_CENTER_Y = 52
+    ICON_RADIUS = 26
+
+    def __init__(self, parent, new_version, current_version):
+        super().__init__(parent)
+        self.setWindowTitle("Доступно обновление")
+
+        self.title_label = QLabel("Вышла новая версия", self)
+        self.title_label.setGeometry(24, 92, self.WIDTH - 48, 32)
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setStyleSheet(
+            f"color: #ffffff; background: transparent; border: none; padding: 0;"
+            f"font-family: '{FONT_FAMILY}'; font-size: 23px; font-weight: 600;"
+        )
+
+        # Текущая версия приглушена, новая — акцентом: пара читается как переход,
+        # и не нужно подписывать словами, что из этого установлено.
+        self.version_label = QLabel(self)
+        self.version_label.setGeometry(24, 132, self.WIDTH - 48, 30)
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.version_label.setTextFormat(Qt.TextFormat.RichText)
+        self.version_label.setStyleSheet(
+            f"background: transparent; border: none; padding: 0;"
+            f"font-family: '{FONT_FAMILY}'; font-size: 20px;"
+        )
+        self.version_label.setText(
+            f"<span style='color:#8b98a5'>{_display_version(current_version)}</span>"
+            f"&nbsp;&nbsp;<span style='color:{ACTIVE_COLOR}'>&#8594;</span>&nbsp;&nbsp;"
+            f"<span style='color:{ACTIVE_COLOR}; font-weight:700'>"
+            f"{_display_version(new_version)}</span>"
+        )
+
+        # Пояснения под номерами версий нет намеренно: значок загрузки, заголовок и
+        # кнопка говорят одно и то же, и строка про страницу GitHub только повторяла
+        # их третий раз.
+        self.btn_download = QPushButton("Скачать", self)
+        self.btn_download.setStyleSheet(ACCENT_BUTTON_STYLE)
+        self.btn_skip = QPushButton("Пропустить", self)
+        self.btn_skip.setStyleSheet(BUTTON_STYLE)
+        self._layout_buttons()
+
+        self.btn_download.clicked.connect(self.accept)
+        self.btn_skip.clicked.connect(self.reject)
+        self.setFixedSize(self.WIDTH, self.HEIGHT)
+
+    def _layout_buttons(self):
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(FONT_SIZE)
+        metrics = QFontMetrics(font)
+        gap, height, padding = 16, 42, 44
+        width_download = max(150, metrics.horizontalAdvance(self.btn_download.text()) + padding)
+        width_skip = max(150, metrics.horizontalAdvance(self.btn_skip.text()) + padding)
+        total = width_download + gap + width_skip
+        start_x = (self.WIDTH - total) // 2
+        y = self.HEIGHT - 24 - height
+        self.btn_download.setGeometry(start_x, y, width_download, height)
+        self.btn_skip.setGeometry(start_x + width_download + gap, y, width_skip, height)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        center = QPointF(self.WIDTH / 2, self.ICON_CENTER_Y)
+        # Круг заливаем акцентом на просвет: сплошной пятак в верхней части окна
+        # перетягивал на себя всё внимание с самого сообщения.
+        accent = QColor(ACTIVE_COLOR)
+        halo = QColor(accent)
+        halo.setAlpha(38)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(halo)
+        painter.drawEllipse(center, self.ICON_RADIUS, self.ICON_RADIUS)
+
+        pen = QPen(accent, 2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Стрелка вниз в подставку — привычный знак загрузки.
+        cx, top, bottom = center.x(), center.y() - 11, center.y() + 4
+        painter.drawLine(QPointF(cx, top), QPointF(cx, bottom))
+        painter.drawLine(QPointF(cx - 5.5, bottom - 5.5), QPointF(cx, bottom))
+        painter.drawLine(QPointF(cx + 5.5, bottom - 5.5), QPointF(cx, bottom))
+        tray = QRectF(cx - 9.5, center.y() + 9, 19, 0)
+        painter.drawLine(tray.topLeft(), tray.topRight())
+
 
 class InfoDialog(_BaseDraggableDialog):
     """Диалог с одной кнопкой (OK) и динамическим размером."""

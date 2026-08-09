@@ -10,6 +10,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# No live GitHub request from a test run: it would be flaky, count against the
+# API rate limit and write update state into the real user data directory.
+os.environ["BOOSTIFY_NO_UPDATE_CHECK"] = "1"
 
 
 def check(condition, message):
@@ -143,10 +146,15 @@ class FakeResponse:
 
 
 def configure_isolated_storage(temp_dir):
+    from BoostiFy.core import app_paths
     from BoostiFy.GUI.core import game_storage
 
     game_storage.configure_storage(temp_dir)
     game_storage.ensure_default_config()
+    # Not everything goes through game_storage: the update checker keeps its state
+    # next to DATA_DIR, so redirect that root too or the run writes into the real
+    # %LOCALAPPDATA%\BoostiFy.
+    app_paths.DATA_DIR = Path(temp_dir)
     return game_storage
 
 
@@ -157,6 +165,88 @@ def patch_dialogs():
 
     toast.InfoDialog.exec = lambda self: QDialog.DialogCode.Accepted
     toast.CustomConfirmDialog.exec = lambda self: QDialog.DialogCode.Accepted
+
+
+def check_update_notification(app, window, main_window_module, temp_dir):
+    """Update prompt: opens GitHub on accept, stays quiet once skipped.
+
+    The network layer is covered by unit tests; here the GitHub answer is stubbed so
+    the run stays offline and only the window wiring is exercised.
+    """
+    from PyQt6.QtCore import QThreadPool
+    from PyQt6.QtWidgets import QDialog
+
+    from BoostiFy.core import updates
+
+    original_check = main_window_module.check_for_update
+    original_dialog = main_window_module.UpdateDialog
+    original_open = main_window_module.QDesktopServices.openUrl
+    state_file = temp_dir / "update_state.json"
+    opened = []
+    shown = []
+    answer = {"value": QDialog.DialogCode.Accepted}
+
+    def fake_check():
+        skipped = updates.load_skipped_version()
+        if skipped == "v9.9.9":
+            return None
+        return updates.UpdateInfo(version="v9.9.9", url=updates.RELEASES_PAGE, current="1.0.0")
+
+    class FakeDialog:
+        def __init__(self, parent, new_version, current_version):
+            shown.append((new_version, current_version))
+
+        def exec(self):
+            return answer["value"]
+
+    def run_check():
+        window.check_for_update_async()
+        QThreadPool.globalInstance().waitForDone(10000)
+        app.processEvents()
+        app.processEvents()
+
+    main_window_module.check_for_update = fake_check
+    main_window_module.UpdateDialog = FakeDialog
+    main_window_module.QDesktopServices.openUrl = lambda url: opened.append(url.toString())
+    try:
+        run_check()
+        check(shown == [("v9.9.9", "1.0.0")], "newer release on GitHub raises the update prompt")
+        check(opened == [updates.RELEASES_PAGE], "accepting the prompt opens the release page")
+        check(not state_file.exists(), "downloading does not mark the version as skipped")
+
+        answer["value"] = QDialog.DialogCode.Rejected
+        shown.clear()
+        run_check()
+        check(len(shown) == 1, "prompt reappears while the version was not answered")
+        check(
+            json.loads(state_file.read_text(encoding="utf-8")).get("skipped_version") == "v9.9.9",
+            "skipping remembers the exact version",
+        )
+
+        shown.clear()
+        run_check()
+        check(shown == [], "skipped version is never offered again")
+
+        def failing_check():
+            raise OSError("network unreachable")
+
+        main_window_module.check_for_update = failing_check
+        shown.clear()
+        run_check()
+        check(shown == [], "unreachable GitHub raises no dialog")
+        check(window._update_task is None, "a failed check releases the task slot")
+        check(not window._closing, "a failed check does not shut the window down")
+
+        main_window_module.check_for_update = fake_check
+        window._closing = True
+        shown.clear()
+        run_check()
+        check(shown == [], "no update prompt once the window is closing")
+        window._closing = False
+    finally:
+        main_window_module.check_for_update = original_check
+        main_window_module.UpdateDialog = original_dialog
+        main_window_module.QDesktopServices.openUrl = original_open
 
 
 def main():
@@ -311,8 +401,21 @@ def main():
             and stats_panel.refresh_button.geometry().bottom() < stats_panel.library_card.geometry().top()
             and stats_panel.library_card.geometry().bottom() < stats_panel.library_panel.geometry().top()
             and stats_panel.library_panel.geometry().bottom()
-            < stats_panel.activity_panel.geometry().top(),
+            < stats_panel.outcome_card.geometry().top(),
             "statistics dashboard controls never overlap",
+        )
+        session_cards = (
+            stats_panel.outcome_card, stats_panel.games_card, stats_panel.duration_card,
+        )
+        check(
+            all(
+                left.geometry().right() < right.geometry().left()
+                for left, right in zip(session_cards[:-1], session_cards[1:], strict=True)
+            )
+            and {card.geometry().bottom() for card in session_cards} == {
+                stats_panel.outcome_card.geometry().bottom()
+            },
+            "last-session cards sit in one row without overlapping",
         )
         settings._set_section(0)
         # Уменьшаем, а не увеличиваем: стандартное значение — 60 (потолок), и «+» был бы no-op.
@@ -496,6 +599,8 @@ def main():
         ])
         stored = game_storage.load_games()
         check(stored == [{"appid": "10", "name": "570", "status": "Ожидание"}], "storage normalizes malformed game rows")
+
+        check_update_notification(app, window, main_window_module, Path(temp_dir))
 
         window.close()
         app.processEvents()

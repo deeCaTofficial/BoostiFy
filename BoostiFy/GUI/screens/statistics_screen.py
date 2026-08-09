@@ -1,4 +1,3 @@
-from datetime import datetime
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath
@@ -91,21 +90,35 @@ class StatusDistributionBar(QWidget):
 
 
 class StatisticsCard(QFrame):
-    """Плитка-показатель: подпись сверху, крупное число снизу. Без мелкой третьей
-    строки — она добавляла шума, а суть метрики уже в подписи."""
+    """Плитка-показатель: подпись сверху, значение снизу.
 
-    def __init__(self, caption, accent=ACTIVE_COLOR, parent=None):
+    Подписи по центру — как во всех остальных вкладках настроек, где текст набран
+    стилем с qproperty-alignment: AlignCenter. Ширину подписи и значения плитка
+    подгоняет сама при изменении размера, поэтому одна и та же плитка годится и для
+    узкого ряда показателей, и для широких карточек последнего сеанса."""
+
+    def __init__(self, caption, accent=ACTIVE_COLOR, parent=None, value_size=30):
         super().__init__(parent)
         self.setObjectName("statisticsCard")
         self.setStyleSheet(CARD_STYLE)
+        self._value_size = value_size
         self.caption_label = QLabel(caption, self)
-        self.caption_label.setGeometry(16, 16, 108, 18)
+        self.caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.caption_label.setStyleSheet(CAPTION_STYLE)
         self.value_label = QLabel("0", self)
-        self.value_label.setGeometry(16, 40, 108, 40)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_accent(accent)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        inner = max(0, self.width() - 16)
+        self.caption_label.setGeometry(8, 32, inner, 18)
+        self.value_label.setGeometry(8, 56, inner, 42)
+
+    def set_accent(self, color):
         self.value_label.setStyleSheet(
-            f"color: {accent}; background: transparent; font-family: '{FONT_FAMILY}'; "
-            "font-size: 30px; font-weight: 700;"
+            f"color: {color}; background: transparent; font-family: '{FONT_FAMILY}'; "
+            f"font-size: {self._value_size}px; font-weight: 700;"
         )
 
     def set_value(self, value):
@@ -133,63 +146,53 @@ class StatisticsPanel(QWidget):
         self.reset_button.setStyleSheet(BUTTON_STYLE)
         self.reset_button.clicked.connect(self.reset_requested.emit)
 
-        # Ряд показателей: четыре плитки одной высоты, как крупные плашки вкладок.
+        # Вся правая часть выровнена по сетке левого меню: его кнопки заканчиваются
+        # на 45, 120, 195, 270, 345 и 420 (в координатах этой области), поэтому и блоки
+        # обрываются ровно на этих же линиях. Раньше они стояли на своих 63/177/299 —
+        # отсюда и ощущение перекоса.
         self.library_card = StatisticsCard("Игр в списке", MUTED_COLOR, self)
         self.sessions_card = StatisticsCard("Сеансов", TEXT_COLOR, self)
         self.success_card = StatisticsCard("Успешно", SUCCESS_COLOR, self)
         self.reliability_card = StatisticsCard("Надёжность", ACTIVE_COLOR, self)
-        for index, card in enumerate(
-            (self.library_card, self.sessions_card, self.success_card, self.reliability_card)
+        # Плитки делим на две половины ровно по кнопкам сверху: правый край второй
+        # плитки совпадает с правым краем «Обновить» (287), а третья начинается там же,
+        # где «Сбросить» (303). Раньше шаг был свой (150 через 10), и средний разрыв
+        # не совпадал с разрывом между кнопками — колонка выглядела сдвинутой.
+        for card, x in zip(
+            (self.library_card, self.sessions_card, self.success_card, self.reliability_card),
+            (0, 149, 303, 452),
+            strict=True,
         ):
-            card.setGeometry(index * 150, 63, 140, 96)
+            card.setGeometry(x, 75, 138, 120)
 
-        # Панель «Текущая таблица»: подпись + сводка, полоса распределения, легенда.
+        # Состояние таблицы: полоса и подписи к ней. Заголовок и «Обработано N из M»
+        # убраны — полоса с легендой говорят ровно то же самое, только без слов.
         self.library_panel = QFrame(self)
         self.library_panel.setObjectName("statisticsPanel")
-        self.library_panel.setGeometry(0, 177, 590, 110)
+        self.library_panel.setGeometry(0, 225, 590, 45)
         self.library_panel.setStyleSheet(CARD_STYLE)
-        library_title = QLabel("Текущая таблица", self.library_panel)
-        library_title.setGeometry(18, 16, 300, 20)
-        library_title.setStyleSheet(CAPTION_STYLE)
-        self.library_summary_label = QLabel("", self.library_panel)
-        self.library_summary_label.setGeometry(272, 16, 300, 20)
-        self.library_summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.library_summary_label.setStyleSheet(CAPTION_STYLE)
         self.distribution_bar = StatusDistributionBar(self.library_panel)
-        self.distribution_bar.setGeometry(18, 48, 554, 16)
+        self.distribution_bar.setGeometry(18, 11, 554, 6)
         self.legend_label = QLabel("", self.library_panel)
-        self.legend_label.setGeometry(18, 76, 554, 24)
+        self.legend_label.setGeometry(18, 21, 554, 20)
+        self.legend_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.legend_label.setTextFormat(Qt.TextFormat.RichText)
         self.legend_label.setStyleSheet(BODY_STYLE)
 
-        # Панель «Последний сеанс»: итог одной строкой + время справа + детали снизу.
-        self.activity_panel = QFrame(self)
-        self.activity_panel.setObjectName("statisticsPanel")
-        self.activity_panel.setGeometry(0, 299, 590, 106)
-        self.activity_panel.setStyleSheet(CARD_STYLE)
-        activity_title = QLabel("Последний сеанс", self.activity_panel)
-        activity_title.setGeometry(18, 14, 260, 20)
-        activity_title.setStyleSheet(CAPTION_STYLE)
-        self.total_time_label = QLabel("Общее время: 0 сек.", self.activity_panel)
-        self.total_time_label.setGeometry(272, 14, 300, 20)
-        self.total_time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.total_time_label.setStyleSheet(CAPTION_STYLE)
-        self.last_summary_label = QLabel("Сеансов пока не было", self.activity_panel)
-        self.last_summary_label.setGeometry(18, 40, 360, 26)
-        self.last_summary_label.setStyleSheet(
-            f"color: {TEXT_COLOR}; background: transparent; font-family: '{FONT_FAMILY}'; "
-            "font-size: 19px; font-weight: 600;"
-        )
-        self.last_time_label = QLabel("", self.activity_panel)
-        self.last_time_label.setGeometry(372, 40, 200, 26)
-        self.last_time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.last_time_label.setStyleSheet(BODY_STYLE)
-        self.last_details_label = QLabel("Завершите первый буст — данные появятся здесь.", self.activity_panel)
-        self.last_details_label.setGeometry(18, 74, 554, 22)
-        self.last_details_label.setStyleSheet(
-            f"color: {MUTED_COLOR}; background: transparent; "
-            f"font-family: '{FONT_FAMILY}'; font-size: 14px;"
-        )
+        # Последний сеанс — три отдельные карточки, а не колонки внутри одной плашки:
+        # нижний ряд подхватывает ритм верхнего, и оба читаются как один список
+        # показателей. Отдельной подписи над ними нет — ряд говорит сам за себя.
+        self.outcome_card = StatisticsCard("Итог", MUTED_COLOR, self, value_size=19)
+        self.games_card = StatisticsCard("Готово", TEXT_COLOR, self, value_size=19)
+        self.duration_card = StatisticsCard("Время", TEXT_COLOR, self, value_size=19)
+        # Три карточки по 186 с зазором 16 — средняя встаёт ровно по центральной оси
+        # (295), той же, что разделяет кнопки и половины ряда плиток.
+        for card, x in zip(
+            (self.outcome_card, self.games_card, self.duration_card),
+            (0, 202, 404),
+            strict=True,
+        ):
+            card.setGeometry(x, 300, 186, 120)
 
     def set_data(self, games, statistics):
         games = games if isinstance(games, (list, tuple)) else []
@@ -210,47 +213,41 @@ class StatisticsPanel(QWidget):
             **current,
         }
 
-        terminal = current["successful"] + current["failed"] + current["skipped"]
         self.library_card.set_value(_number(library_total))
         self.sessions_card.set_value(_number(sessions))
         self.success_card.set_value(_number(successful))
         self.reliability_card.set_value(f"{reliability}%")
-        self.library_summary_label.setText(f"Обработано {terminal} из {library_total}")
         self.distribution_bar.set_counts(
             current["successful"], current["failed"], current["skipped"], current["other"]
         )
+        # Только цветная точка и число: слова «Готово/Ошибки/Пропущено» дублировали
+        # цвета полосы над легендой и занимали строку целиком.
         self.legend_label.setText(
-            f"<span style='color:{SUCCESS_COLOR}'>●</span> Готово {current['successful']}&nbsp;&nbsp;&nbsp; "
-            f"<span style='color:{ERROR_COLOR}'>●</span> Ошибки {current['failed']}&nbsp;&nbsp;&nbsp; "
-            f"<span style='color:{SKIPPED_COLOR}'>●</span> Пропущено {current['skipped']}&nbsp;&nbsp;&nbsp; "
-            f"<span style='color:{IDLE_COLOR}'>●</span> Остальные {current['other']}"
-        )
-        self.total_time_label.setText(
-            f"Общее время: {_duration(statistics.get('total_runtime_seconds', 0))}"
+            f"<span style='color:{SUCCESS_COLOR}'>●</span> Готово {_number(current['successful'])}"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{ERROR_COLOR}'>●</span> Ошибки {_number(current['failed'])}"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{SKIPPED_COLOR}'>●</span> Пропущено {_number(current['skipped'])}"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{IDLE_COLOR}'>●</span> В очереди {_number(current['other'])}"
         )
 
         last = statistics.get("last_session")
         if not isinstance(last, dict):
-            self.last_summary_label.setText("Сеансов пока не было")
-            self.last_time_label.clear()
-            self.last_details_label.setText("Завершите первый буст — данные появятся здесь.")
+            self.outcome_card.set_value("—")
+            self.outcome_card.set_accent(MUTED_COLOR)
+            self.games_card.set_value("—")
+            self.duration_card.set_value("—")
+            return
+
+        if last.get("interrupted"):
+            state, accent = "Прерван", ERROR_COLOR
+        elif last.get("stopped"):
+            state, accent = "Остановлен", SKIPPED_COLOR
         else:
-            if last.get("interrupted"):
-                state = "Прерван аварийно"
-            elif last.get("stopped"):
-                state = "Остановлен"
-            else:
-                state = "Завершён"
-            games_total = max(0, int(last.get("games_total", 0) or 0))
-            last_success = max(0, int(last.get("successful_games", 0) or 0))
-            self.last_summary_label.setText(f"{state} · {games_total} игр · готово {last_success}")
-            try:
-                timestamp = datetime.fromtimestamp(float(last.get("finished_at", 0)))
-                self.last_time_label.setText(timestamp.strftime("%d.%m.%Y · %H:%M"))
-            except (OSError, OverflowError, TypeError, ValueError):
-                self.last_time_label.clear()
-            self.last_details_label.setText(
-                f"Длительность {_duration(last.get('duration_seconds', 0))}  ·  "
-                f"Ошибки {max(0, int(last.get('failed_games', 0) or 0))}  ·  "
-                f"Пропущено {max(0, int(last.get('skipped_games', 0) or 0))}"
-            )
+            state, accent = "Завершён", SUCCESS_COLOR
+        # Итог подкрашиваем по исходу: цвет считывается быстрее слова.
+        self.outcome_card.set_value(state)
+        self.outcome_card.set_accent(accent)
+
+        games_total = max(0, int(last.get("games_total", 0) or 0))
+        last_success = max(0, int(last.get("successful_games", 0) or 0))
+        self.games_card.set_value(f"{_number(last_success)} из {_number(games_total)}")
+        self.duration_card.set_value(_duration(last.get("duration_seconds", 0)))

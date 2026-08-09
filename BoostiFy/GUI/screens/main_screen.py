@@ -2,7 +2,7 @@
 
 from PyQt6 import sip
 from PyQt6.QtCore import QItemSelection, QItemSelectionModel, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QFont, QFontMetrics, QGuiApplication
 from PyQt6.QtWidgets import QDialog, QProgressBar, QPushButton, QTableView, QWidget
 
 from BoostiFy.core.booster import SteamBooster
@@ -12,7 +12,7 @@ from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import DEFAULT_CONFIG, load_games, save_games
 from BoostiFy.GUI.screens.table_widget import GameTableModel
 from BoostiFy.GUI.utils.helpers import estimate_boost_seconds, format_time_verbose
-from BoostiFy.GUI.utils.styles import BUTTON_STYLE
+from BoostiFy.GUI.utils.styles import ACTIVE_COLOR, BUTTON_STYLE, FONT_FAMILY
 from BoostiFy.GUI.widgets.editable_label import EditableLabel
 from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
 
@@ -29,6 +29,13 @@ class MainScreenWidget(QWidget):
     set_game_status_signal = pyqtSignal(str, str)
     force_table_update_signal = pyqtSignal()
     boost_finished_signal = pyqtSignal()
+
+    # Отступ ползунка от краёв области строк — тот же сверху и снизу, чтобы полоса
+    # выглядела вписанной в таблицу, а не упёртой в её границы.
+    SCROLLBAR_INSET = 6
+    # Внутренний отступ таблицы: он же в стиле QTableView и он же вычитается при
+    # расчёте высоты строки — иначе строки считаются по площади, которой у них нет.
+    TABLE_PADDING = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -106,6 +113,17 @@ class MainScreenWidget(QWidget):
         self.game_table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
         self.game_table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self.game_table.verticalHeader().setVisible(False)
+        # Ни сетки, ни полос через строку: и то и другое — прямоугольники с острыми
+        # краями, которые упирались в скруглённые углы таблицы. Поверхность остаётся
+        # ровной, строки разделяет высота и выделение.
+        self.game_table.setShowGrid(False)
+        self.game_table.setAlternatingRowColors(False)
+        # Сортировка по клику на заголовок: метод _sort_by был, но его никто не вызывал —
+        # из интерфейса возможность была недоступна.
+        header = self.game_table.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setHighlightSections(False)
+        header.sectionClicked.connect(self._sort_by_column_index)
         self.game_table.selectionModel().selectionChanged.connect(self._handle_table_selection_changed)
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setGeometry(30, 495, 900, 30)
@@ -232,16 +250,89 @@ class MainScreenWidget(QWidget):
             QTimer.singleShot(100, lambda: self.force_table_update())
         else:
             InfoDialog(self, 'Ни одна игра не выбрана для удаления!').exec()
-    def _table_stylesheet(self, font_px):
+    def _table_stylesheet(self, font_px, header_h=None, bottom_pad=None):
+        # Ползунок рисуем сами: стандартный Qt-скроллбар приносит рамку, штриховку и
+        # две кнопки-стрелки — на тёмной плашке это выглядит инородно. Оставляем только
+        # тонкую скруглённую полоску без дорожки и стрелок.
+        #
+        # Полосу прокрутки Qt растягивает на всю высоту таблицы, включая шапку, поэтому
+        # ползунок поднимался вдоль заголовка к скруглённому углу и выглядел наложенным
+        # на таблицу. Верхним отступом опускаем его под шапку: полоса живёт ровно
+        # напротив строк, которые прокручивает.
+        header_h = int(header_h or self.header_height)
+        bottom_pad = self.TABLE_PADDING if bottom_pad is None else int(bottom_pad)
+        scroll_top = header_h + self.SCROLLBAR_INSET
+        scroll_bottom = self.SCROLLBAR_INSET
         return f'''
             QTableView {{
                 background-color: #232b36;
                 color: #e6e6e6;
                 border: none;
-                border-radius: 16px;
+                /* 10px — как у кнопок и панелей; прежние 16px были только здесь. */
+                border-radius: 10px;
                 font-size: {font_px}px;
-                padding: 8px;
+                padding: {self.TABLE_PADDING}px {self.TABLE_PADDING}px {bottom_pad}px;
+                gridline-color: transparent;
+                selection-background-color: #2f4a63;
+                selection-color: #ffffff;
+                /* Убирает пунктирную рамку фокуса вокруг текущей ячейки. */
+                outline: none;
             }}
+            /* border-radius таблицы каскадом достаётся ячейкам: каждая выделенная
+               ячейка скруглялась, и в её углах наружу вылезала системная синяя
+               подсветка — те самые полоски по краям строки. Гасим скругление и
+               рамку у ячеек, скруглённой остаётся только сама таблица. */
+            QTableView::item {{
+                border: none;
+                border-radius: 0;
+                padding: 0 6px;
+            }}
+            QTableView::item:selected {{
+                background-color: #2f4a63;
+                color: #ffffff;
+            }}
+            /* Заголовок без собственной плашки: прямоугольник с острыми углами внутри
+               скруглённой таблицы читался как чужая деталь, особенно в углах. Оставляем
+               подписи и тонкую линию под ними. */
+            QHeaderView {{ background: transparent; border: none; }}
+            QHeaderView::section {{
+                background: transparent;
+                color: #8b98a5;
+                border: none;
+                border-bottom: 1px solid #313c4a;
+                padding: 6px 4px;
+                font-weight: 600;
+            }}
+            QHeaderView::section:hover {{ color: #dcdedf; }}
+            QTableCornerButton::section {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: transparent;
+                border: none;
+                width: 8px;
+                margin: {scroll_top}px 2px {scroll_bottom}px 0;
+            }}
+            QScrollBar:horizontal {{
+                background: transparent;
+                border: none;
+                height: 8px;
+                margin: 0 {self.SCROLLBAR_INSET}px 2px {self.SCROLLBAR_INSET}px;
+            }}
+            QScrollBar::handle:vertical,
+            QScrollBar::handle:horizontal {{
+                background: #3c4b5e;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical {{ min-height: 30px; }}
+            QScrollBar::handle:horizontal {{ min-width: 30px; }}
+            QScrollBar::handle:vertical:hover,
+            QScrollBar::handle:horizontal:hover {{ background: #4b5d73; }}
+            QScrollBar::handle:vertical:pressed,
+            QScrollBar::handle:horizontal:pressed {{ background: {ACTIVE_COLOR}; }}
+            /* Кнопки-стрелки и «страницы» дорожки убираем полностью. */
+            QScrollBar::add-line, QScrollBar::sub-line {{
+                width: 0; height: 0; border: none; background: none;
+            }}
+            QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
         '''
 
     def apply_row_density(self):
@@ -254,10 +345,65 @@ class MainScreenWidget(QWidget):
         rows = max(1, int(getattr(self, 'visible_rows', 15) or 15))
         header = self.game_table.horizontalHeader()
         header_h = header.height() if header.height() > 0 else self.header_height
-        available = max(self.min_row_height, self.game_table.height() - header_h)
+        # Строки живут в viewport, а он ниже самой таблицы на шапку и два внутренних
+        # отступа. Пока высоту считали от game_table.height(), строка выходила выше
+        # нужного и последняя не помещалась — её нижний край срезался о скруглённый
+        # край таблицы. Считаем от собственной геометрии, а не от viewport: его высоту
+        # мы тут же меняем нижним отступом, и опрос привёл бы к качанию туда-сюда.
+        available = max(
+            self.min_row_height,
+            self.game_table.height() - header_h - 2 * self.TABLE_PADDING,
+        )
         row_h = max(self.min_row_height, available // rows)
-        self.game_table.verticalHeader().setDefaultSectionSize(row_h)
-        self.game_table.setStyleSheet(self._table_stylesheet(max(9, min(18, row_h - 7))))
+        vertical_header = self.game_table.verticalHeader()
+        # Свой минимум Qt считает по системному шрифту (получалось 24 px) и молча
+        # игнорировал меньшую высоту: на 20 строках вместо них помещалось 15, остальные
+        # уезжали под нижний край. Разрешаем сжиматься до нашего предела.
+        vertical_header.setMinimumSectionSize(self.min_row_height)
+        vertical_header.setDefaultSectionSize(row_h)
+        font_px = max(9, min(18, row_h - 7))
+        # Остаток высоты, в который целая строка уже не влезает, Qt занимает верхушкой
+        # следующей — из-под нижнего края выглядывала обрезанная полоска строки.
+        # Отдаём этот остаток нижнему отступу: область строк становится кратной их
+        # высоте, и последняя строка всегда целая.
+        bottom_pad = self.TABLE_PADDING + available % row_h
+        self.game_table.setStyleSheet(self._table_stylesheet(font_px, header_h, bottom_pad))
+        self._apply_column_widths(font_px)
+
+    def _apply_column_widths(self, font_px):
+        """Ширины столбцов под фактическое содержимое.
+
+        Раньше они были заданы числами (46/78/240/210) под короткие значения. На
+        библиотеке в тысячи игр номер строки занимает пять цифр, а AppID — семь, и
+        оба столбца схлопывались в «1...» и «2461...». Считаем по самому длинному
+        значению текущим шрифтом: он меняется вместе с плотностью строк, поэтому
+        пересчёт идёт там же."""
+        font = QFont(FONT_FAMILY)
+        font.setPixelSize(font_px)
+        metrics = QFontMetrics(font)
+        padding = 18  # горизонтальные поля ячейки плюс небольшой запас
+
+        def fits(*values):
+            return max(metrics.horizontalAdvance(str(value)) for value in values) + padding
+
+        rows = len(getattr(self, 'filtered_games', []))
+        longest_appid = max(
+            (str(game.get('appid', '')) for game in self.filtered_games if isinstance(game, dict)),
+            key=len,
+            default='0000000',
+        )
+        index_width = fits('№', rows or 1)
+        appid_width = fits('AppID', longest_appid)
+
+        viewport = self.game_table.viewport().width()
+        rest = max(200, viewport - index_width - appid_width)
+        # Названию отдаём больше: по нему игру узнают, а длинную причину ошибки
+        # столбец всё равно не вместит — её показывает подсказка при наведении.
+        status_width = max(140, int(rest * 0.38))
+        name_width = max(120, rest - status_width)
+
+        for column, width in enumerate((index_width, appid_width, name_width, status_width)):
+            self.game_table.setColumnWidth(column, width)
 
     def update_game_list(self):
         if not hasattr(self, 'game_table') or not self.game_table:
@@ -288,11 +434,8 @@ class MainScreenWidget(QWidget):
             elif self.sort_column == 'status':
                 self.filtered_games = sorted(self.filtered_games, key=lambda g: str(g.get('status', '')).lower(), reverse=self.sort_reverse)
         self.game_table_model.set_games(self.filtered_games)
-        # Фиксируем ширину столбцов после обновления данных
-        self.game_table.setColumnWidth(0, 60)
-        self.game_table.setColumnWidth(1, 90)
-        self.game_table.setColumnWidth(2, 290)
-        self.game_table.setColumnWidth(3, 105)
+        # Ширины столбцов пересчитывает apply_row_density: они зависят и от самих
+        # значений, и от текущего размера шрифта.
         self.apply_row_density()
         self.update_row_highlight()
         if not getattr(self, 'is_boosting', False):
@@ -341,13 +484,16 @@ class MainScreenWidget(QWidget):
             'started': 'Бустится',
             'done': 'Готово',
             'stopped': 'Остановлено',
+            'error': 'Ошибка',
             'skipped: black list': 'Пропущено: чёрный список',
         }
         if value in translations:
             return translations[value]
-        if value.startswith('error:'):
-            detail = value.split(':', 1)[1].strip()
-            return f"Ошибка: {detail}"[:500]
+        # Причина сбоя в таблицу не помещалась и всё равно обрезалась многоточием,
+        # поэтому в статусе остаётся только слово «Ошибка», а полный разбор с выводом
+        # воркера пишется в журнал сбоев (logs/boost_errors.log).
+        if value.startswith('error'):
+            return 'Ошибка'
         return value[:500] or 'Ожидание'
 
     def set_all_status(self, status):
@@ -361,7 +507,10 @@ class MainScreenWidget(QWidget):
         self.force_table_update_signal.emit()
 
     def finalize_session_statuses(self, stopped=False):
-        terminal_prefixes = ('Готово', 'Ошибка:', 'Пропущено:', 'Остановлено')
+        # «Ошибка» без двоеточия: статус стал коротким, а прежний префикс «Ошибка:»
+        # перестал бы совпадать — и завершённая с ошибкой игра переписывалась бы
+        # в «Не выполнено», теряя результат.
+        terminal_prefixes = ('Готово', 'Ошибка', 'Пропущено', 'Остановлено')
         fallback = 'Остановлено' if stopped else 'Не выполнено'
         for game in self.games:
             # isinstance-защита как и везде по коду: одна «грязная» запись в списке
@@ -649,6 +798,18 @@ class MainScreenWidget(QWidget):
 
     def _handle_table_selection_changed(self, selected, deselected):
         self._sync_selected_rows_from_table()
+
+    def _sort_by_column_index(self, index):
+        """Клик по заголовку столбца -> сортировка по нему."""
+        columns = ('num', 'appid', 'name', 'status')
+        if 0 <= index < len(columns):
+            self._sort_by(columns[index])
+            header = self.game_table.horizontalHeader()
+            header.setSortIndicatorShown(True)
+            header.setSortIndicator(
+                index,
+                Qt.SortOrder.DescendingOrder if self.sort_reverse else Qt.SortOrder.AscendingOrder,
+            )
 
     def _sort_by(self, column):
         if self.sort_column == column:

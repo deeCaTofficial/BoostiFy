@@ -2,12 +2,15 @@
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6 import sip
+from PyQt6.QtCore import Qt, QThreadPool, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QMainWindow, QStackedWidget
 
 from BoostiFy.core.booster import normalize_appids
 from BoostiFy.core.runtime_paths import missing_runtime_files, runtime_is_ready
+from BoostiFy.core.updates import check_for_update, remember_skipped_version
+from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import (
     DEFAULT_CONFIG,
     load_config,
@@ -25,13 +28,17 @@ from BoostiFy.GUI.screens.main_screen import MainScreenWidget
 from BoostiFy.GUI.screens.settings_screen import SettingsScreenWidget
 from BoostiFy.GUI.utils.styles import BG_COLOR, BORDER_RADIUS
 from BoostiFy.GUI.widgets.custom_title_bar import CustomTitleBar
-from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog
+from BoostiFy.GUI.widgets.toast import CustomConfirmDialog, InfoDialog, UpdateDialog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class MainWindow(QMainWindow):
     toast_signal = pyqtSignal(str, int)
+
+    # Задержка перед проверкой обновлений: окно успевает отрисоваться и стать
+    # отзывчивым до того, как программа полезет в сеть.
+    UPDATE_CHECK_DELAY_MS = 1500
 
     def __init__(self):
         super().__init__()
@@ -127,6 +134,42 @@ class MainWindow(QMainWindow):
         
         self.show_main()
         self.main_screen.update_time_label()
+
+        # Проверку откладываем: она лезет в сеть, а окно должно появиться сразу.
+        # Через таймер — чтобы запрос стартовал уже после первой отрисовки.
+        self._closing = False
+        self._update_task = None
+        QTimer.singleShot(self.UPDATE_CHECK_DELAY_MS, self.check_for_update_async)
+
+    def check_for_update_async(self):
+        """Спрашивает у GitHub последний релиз в фоне.
+
+        Ошибки не показываем: недоступный GitHub, отсутствие сети или корпоративный
+        прокси — это не проблема пользователя, который просто открыл программу.
+        """
+        if self._closing or self._update_task is not None:
+            return
+        task = BackgroundTask(lambda cancel_event, progress: check_for_update())
+        task.signals.result.connect(self._on_update_check_result)
+        task.signals.error.connect(lambda message: print(f'Проверка обновлений: {message}'))
+        task.signals.finished.connect(self._on_update_check_finished)
+        self._update_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_update_check_finished(self):
+        self._update_task = None
+
+    def _on_update_check_result(self, update):
+        # Ответ приходит из пула потоков и может застать окно уже закрытым.
+        if update is None or self._closing or sip.isdeleted(self):
+            return
+        dialog = UpdateDialog(self, update.version, update.current)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            QDesktopServices.openUrl(QUrl(update.url))
+        else:
+            # «Пропустить» — значит про эту версию больше не напоминать. О следующей
+            # напомним: в файле лежит конкретный номер, а не флаг «не беспокоить».
+            remember_skipped_version(update.version)
 
     def show_main(self):
         self.stacked_widget.setCurrentIndex(0)
@@ -331,6 +374,19 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Этот метод вызывается при закрытии окна."""
         self._stop_requested = True
+        self._closing = True
+        # Запрос к GitHub может висеть до истечения таймаута уже после закрытия окна.
+        # Отменяем задачу и рвём связь сигналов: иначе результат дойдёт до
+        # уничтоженных виджетов и выход упадёт на «wrapped C/C++ object deleted».
+        if self._update_task is not None:
+            self._update_task.cancel()
+            try:
+                self._update_task.signals.result.disconnect()
+                self._update_task.signals.error.disconnect()
+                self._update_task.signals.finished.disconnect()
+            except TypeError:
+                pass  # сигналы уже отсоединены
+            self._update_task = None
         # Оба экрана гасят свои фоновые задачи и отвязывают их сигналы: иначе
         # запоздавший колбэк доходил до уже уничтоженных виджетов и ронял выход
         # с «wrapped C/C++ object has been deleted».
