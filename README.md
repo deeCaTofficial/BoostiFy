@@ -144,7 +144,7 @@ Steam. Интерфейс остаётся отзывчивым, тяжёлые 
 
 <p align="center">
   <a href="https://github.com/deeCaTofficial/BoostiFy/stargazers">
-    <img src="https://img.shields.io/github/stars/deeCaTofficial/BoostiFy?style=for-the-badge&logo=github&label=Поставить%20звезду&color=F7DF1E&labelColor=1a2028" alt="Поставить звезду">
+    <img src="https://img.shields.io/github/stars/deeCaTofficial/BoostiFy?style=for-the-badge&logo=github&label=STAR&color=F7DF1E&labelColor=1a2028" alt="Поставить звезду">
   </a>
 </p>
 
