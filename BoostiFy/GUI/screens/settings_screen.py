@@ -16,6 +16,7 @@ from BoostiFy.GUI.core.game_storage import (
     CD_BOUNDS,
     DEFAULT_CONFIG,
     MIN_CD_SPREAD,
+    TABLE_ROWS_BOUNDS,
     UPLOAD_DIR,
     _atomic_write_json,
     load_config,
@@ -494,13 +495,13 @@ class SettingsScreenWidget(QWidget):
 
     # -------------------- Таблица --------------------
     def _pending_increment_table_rows(self):
-        if self._pending_table_rows < 20:
+        if self._pending_table_rows < TABLE_ROWS_BOUNDS[1]:
             self._pending_table_rows += 1
             self.table_rows_value_label.setText(str(self._pending_table_rows))
             self._save_extra_settings()
 
     def _pending_decrement_table_rows(self):
-        if self._pending_table_rows > 5:
+        if self._pending_table_rows > TABLE_ROWS_BOUNDS[0]:
             self._pending_table_rows -= 1
             self.table_rows_value_label.setText(str(self._pending_table_rows))
             self._save_extra_settings()
@@ -541,7 +542,7 @@ class SettingsScreenWidget(QWidget):
             mw.main_screen.update_game_list()
             mw.main_screen.update_time_label()
             mw.main_screen.set_boost_controls(False)
-        InfoDialog(self, 'Таблица очищена.').exec()
+        self._show_status('Таблица очищена.')
 
     # -------------------- Профессиональное (диапазоны КД) --------------------
     def _adjust_cd(self, kind: str, delta: int):
@@ -594,7 +595,7 @@ class SettingsScreenWidget(QWidget):
             InfoDialog(self, f'Не удалось сбросить статистику: {error}').exec()
             return
         self._refresh_statistics()
-        InfoDialog(self, 'Статистика сброшена. Игры и настройки сохранены.').exec()
+        self._show_status('Статистика сброшена. Игры и настройки сохранены.')
 
     def _format_time_label(self, seconds):
         seconds = int(seconds)
@@ -651,6 +652,15 @@ class SettingsScreenWidget(QWidget):
         self.progress_bar.setFormat(text)
         self.progress_bar.setTextVisible(True)
 
+    def _show_status(self, text):
+        """Итог успешного действия — строкой в полосе состояния, а не отдельным окном.
+
+        Пользователь уже подтвердил действие в диалоге, и второе модальное окно
+        («Удалить?» -> «Удалено!») заставляло кликать ещё раз ради сведений, которые
+        ничего не меняют. Ошибки по-прежнему показываем окном: их нужно заметить."""
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat(str(text))
+
     def _on_clear_cache(self):
         # Чистим и накопленные результаты: чёрный список навсегда исключает игру из
         # будущих сессий, а до этого сбросить его можно было только правкой JSON
@@ -682,10 +692,12 @@ class SettingsScreenWidget(QWidget):
             rebuild_index = getattr(lookup, '_rebuild_index', None)
             if callable(rebuild_index):
                 rebuild_index()
-        if removed:
-            InfoDialog(self, f"Очищено: {', '.join(removed)}").exec()
-        else:
-            InfoDialog(self, "Кэш и списки результатов уже пусты.").exec()
+        # Итог показываем строкой в полосе состояния, а не отдельным окном: действие
+        # пользователь уже подтвердил, и второе модальное окно требовало лишнего клика
+        # ради сведений, которые ему ничего не дают (вплоть до имён служебных файлов).
+        self._show_status(
+            'Кэш и списки результатов очищены.' if removed else 'Очищать было нечего.'
+        )
 
     # --------- Управление конфигами ---------
     def _configs_dir(self) -> Path:
@@ -701,9 +713,28 @@ class SettingsScreenWidget(QWidget):
 
     def _update_cfg_label(self):
         if self._configs:
-            self.lbl_cfg_name.setText(self._configs[self._cfg_index].name)
+            self.lbl_cfg_name.setText(self._configs[self._cfg_index].stem)
         else:
             self.lbl_cfg_name.setText("Нет сохранённых конфигов")
+
+    def _new_config_path(self):
+        """Имя нового конфига: дата и время, понятные с первого взгляда.
+
+        Раньше выходило `config_20260803_203353_021100.json` — метка времени вместе
+        с микросекундами. Человек в этом не разберётся, а именно это имя показывается
+        и в списке, и в сообщениях. Формат «ГГГГ-ММ-ДД ЧЧ-ММ» читается сразу и при
+        этом сортируется по возрастанию даты, как и раскладывает список sorted().
+        Двоеточия в именах файлов Windows не допускает, поэтому время через дефис.
+        """
+        directory = self._configs_dir()
+        base = f"Конфиг {time.strftime('%Y-%m-%d %H-%M')}"
+        path = directory / f"{base}.json"
+        # Несколько сохранений в одну минуту различаем номером, а не микросекундами.
+        counter = 2
+        while path.exists():
+            path = directory / f"{base} ({counter}).json"
+            counter += 1
+        return path
 
     def _switch_config(self, direction: int):
         if not self._configs:
@@ -729,9 +760,7 @@ class SettingsScreenWidget(QWidget):
             'slot_cd_from': self._pending_slot_cd_from,
             'slot_cd_to': self._pending_slot_cd_to,
         })
-        d = self._configs_dir()
-        ts = time.strftime('%Y%m%d_%H%M%S')
-        path = d / f'config_{ts}_{time.time_ns() % 1_000_000:06d}.json'
+        path = self._new_config_path()
         # Атомарно, как и остальные файлы проекта: обычный open/write оставлял битый
         # профиль, если запись обрывалась.
         _atomic_write_json(path, data)
@@ -740,16 +769,22 @@ class SettingsScreenWidget(QWidget):
         if path in self._configs:
             self._cfg_index = self._configs.index(path)
             self._update_cfg_label()
-        InfoDialog(self, f"Сохранено: {path.name}").exec()
+        self._show_status(f'Сохранено: {path.stem}')
 
     def _delete_selected_config(self):
         if not self._configs:
             self._update_configs_list()
-            InfoDialog(self, 'Сохранённых конфигов нет.').exec()
+            self._show_status('Сохранённых конфигов нет.')
             return
         path = self._configs[self._cfg_index]
+        # Имя уже начинается со слова «Конфиг», поэтому в вопросе его не повторяем —
+        # выходило «Удалить конфиг Конфиг 2026-08-03 20-38».
         confirm = CustomConfirmDialog(
-            self, f'Удалить конфиг {path.name}?', 'Удалить', 'Отмена'
+            self,
+            f'Удалить «{path.stem}»?\n'
+            'Это действие нельзя отменить.',
+            'Удалить',
+            'Отмена',
         )
         if confirm.exec() != QDialog.DialogCode.Accepted:
             return
@@ -759,7 +794,7 @@ class SettingsScreenWidget(QWidget):
             InfoDialog(self, f'Не удалось удалить конфиг: {error}').exec()
             return
         self._update_configs_list()
-        InfoDialog(self, f'Удалено: {path.name}').exec()
+        self._show_status(f'Удалено: {path.stem}')
 
     def _load_selected_config(self):
         if not self._configs:
@@ -797,7 +832,7 @@ class SettingsScreenWidget(QWidget):
         self._refresh_cd_labels()
         self._emit_current_settings()
         self._save_extra_settings()
-        InfoDialog(self, f"Загружено: {path.name}").exec()
+        self._show_status(f'Загружено: {path.stem}')
 
     # -------------------- Добавление всех игр --------------------
     def _on_add_all_games(self):
@@ -901,7 +936,7 @@ class SettingsScreenWidget(QWidget):
         added = main_screen.add_games_bulk(items)
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat(f'Готово. Добавлено игр: {added}.')
-        InfoDialog(self, f'Добавлено игр: {added}. Дубликаты автоматически пропущены.').exec()
+        InfoDialog(self, f'Добавлено игр: {added}.').exec()
 
     def _on_add_all_error(self, message):
         if not self._ui_is_available():

@@ -65,6 +65,9 @@ def validate_json_files():
 
 def instantiate_gui():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # No live GitHub request from a test run: it would be flaky, count against the
+    # API rate limit and write update state into the real user data directory.
+    os.environ["BOOSTIFY_NO_UPDATE_CHECK"] = "1"
     from PyQt6.QtWidgets import QApplication
 
     from BoostiFy.GUI.main_window import MainWindow

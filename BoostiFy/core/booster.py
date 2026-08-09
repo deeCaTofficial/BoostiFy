@@ -10,9 +10,10 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 
 from BoostiFy.core import process_group
-from BoostiFy.core.app_paths import DATA_DIR, replace_with_retry
+from BoostiFy.core.app_paths import DATA_DIR, LOG_DIR, replace_with_retry
 from BoostiFy.core.runtime_paths import BACKGROUND_WORKER, OWNERSHIP_WORKER
 
 BOOST_WORKER_PATH = str(BACKGROUND_WORKER)
@@ -178,6 +179,46 @@ class StatusListFile:
             return
         self._dirty = False
         self._last_flush = now
+
+
+FAILURE_LOG_NAME = "boost_errors.log"
+FAILURE_LOG_MAX_BYTES = 2 * 1024 * 1024
+_failure_log_lock = threading.Lock()
+
+
+def failure_log_path() -> Path:
+    return LOG_DIR / FAILURE_LOG_NAME
+
+
+def log_failure_details(appid, name, exit_code, output_lines=(), error=None):
+    """Пишет подробности сбоя в отдельный журнал.
+
+    В таблице остаётся только слово «Ошибка» — там нет места для длинной причины и
+    она всё равно обрезалась. Полная картина (код возврата, его расшифровка и хвост
+    вывода воркера) сохраняется здесь, причём подробнее, чем показывал интерфейс:
+    в статус попадали три последние строки, в журнал идут все накопленные.
+    """
+    when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"[{when}] AppID {appid} — {name}"]
+    if error is not None:
+        lines.append(f"    сбой запуска: {type(error).__name__}: {error}")
+    else:
+        lines.append(f"    код возврата: {describe_exit_code(exit_code)}")
+    lines.extend(f"    | {line}" for line in output_lines)
+    record = "\n".join(lines) + "\n\n"
+
+    with _failure_log_lock:
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            path = failure_log_path()
+            # Журнал не должен расти бесконечно: при переполнении оставляем один
+            # предыдущий файл и начинаем заново.
+            if path.exists() and path.stat().st_size + len(record.encode("utf-8")) > FAILURE_LOG_MAX_BYTES:
+                replace_with_retry(path, path.with_suffix(path.suffix + ".1"))
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(record)
+        except OSError as write_error:
+            log_with_time("error", appid, f"Не удалось записать журнал сбоев: {write_error}")
 
 
 def reset_result_lists(directory=None):
@@ -504,9 +545,13 @@ class SteamBooster:
                                     appid,
                                     f"[BLACKLIST ERROR] Не удалось записать ошибку для AppID {appid}: {err}",
                                 )
-                        self._notify(
-                            status_callback, appid, f"error: {describe_exit_code(proc.returncode)}"
+                        # В интерфейс — короткое «Ошибка», подробности с полным
+                        # выводом воркера уходят в отдельный журнал.
+                        log_failure_details(
+                            appid, name, proc.returncode,
+                            output_lines=list(getattr(proc, "_captured_lines", ()) or ()),
                         )
+                        self._notify(status_callback, appid, "error")
                     # Прерываемый межслотовый сон (а не time.sleep до 90с после остановки).
                     if stop_event.wait(random.uniform(*slot_cd_range)):
                         break
@@ -516,7 +561,8 @@ class SteamBooster:
                     # больше не пишем: иначе один общий сбой уносил туда всю очередь.
                     attempted = True  # попытка была и о ней сообщено — она засчитывается
                     log_with_time("error", appid, f"Слот {slot_id} AppID {appid}: {e}")
-                    self._notify(status_callback, appid, f"error: {e}")
+                    log_failure_details(appid, name_map.get(str(appid)) or str(appid), None, error=e)
+                    self._notify(status_callback, appid, "error")
                 finally:
                     # Процесс всегда убираем из словаря (успех/ошибка/исключение).
                     with self.lock:
