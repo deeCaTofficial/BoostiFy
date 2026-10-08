@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "loop_boost": False,
     "table_visible_rows": 15,
     "auto_clean_table": False,
+    "auto_claim_free_games": False,
     "launch_cd_from": 1,
     "launch_cd_to": 6,
     "finish_cd_from": 1,
@@ -125,6 +126,7 @@ def normalize_config(config):
             *TABLE_ROWS_BOUNDS,
         ),
         "auto_clean_table": _as_bool(source.get("auto_clean_table"), False),
+        "auto_claim_free_games": _as_bool(source.get("auto_claim_free_games"), False),
         **{
             f"{pair}_cd_{edge}": _bounded_int(
                 source.get(f"{pair}_cd_{edge}"), DEFAULT_CONFIG[f"{pair}_cd_{edge}"], low, high

@@ -16,6 +16,12 @@
     <Version>1.0.0</Version>
   </PropertyGroup>
 
+  <!-- Без отладочных символов в релизе: иначе в exe попадает полный путь к .pdb на машине сборки. -->
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Include="SteamAccessException.cs" />
     <Compile Include="SteamSession.cs" />

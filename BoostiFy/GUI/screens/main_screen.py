@@ -1,13 +1,22 @@
 # main_screen.py — главный экран приложения
 
 from PyQt6 import sip
-from PyQt6.QtCore import QItemSelection, QItemSelectionModel, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QFontMetrics, QGuiApplication
+from PyQt6.QtCore import (
+    QItemSelection,
+    QItemSelectionModel,
+    Qt,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QDesktopServices, QFont, QFontMetrics, QGuiApplication
 from PyQt6.QtWidgets import QDialog, QProgressBar, QPushButton, QTableView, QWidget
 
+from BoostiFy.core import free_games
 from BoostiFy.core.booster import SteamBooster
 from BoostiFy.core.runtime_paths import BACKGROUND_WORKER
-from BoostiFy.core.steam_lookup import SteamAppLookup
+from BoostiFy.core.steam_lookup import SteamAppLookup, search_store_exact
 from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import DEFAULT_CONFIG, load_games, save_games
 from BoostiFy.GUI.screens.table_widget import GameTableModel
@@ -36,6 +45,13 @@ class MainScreenWidget(QWidget):
     # Внутренний отступ таблицы: он же в стиле QTableView и он же вычитается при
     # расчёте высоты строки — иначе строки считаются по площади, которой у них нет.
     TABLE_PADDING = 8
+    # Паузы при получении игры по запросу из поиска: между ссылками Steam и
+    # перед тем, как переспросить, появилась ли лицензия.
+    ACQUIRE_STEP_MS = 1500
+    ACQUIRE_VERIFY_DELAY_MS = 8000
+    # Статусы, которые уже подводят итог по игре. Их нельзя затирать: результат
+    # сессии складывается именно из них — и автоочистка, и статистика.
+    TERMINAL_STATUS_PREFIXES = ('Готово', 'Ошибка', 'Пропущено', 'Остановлено')
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,7 +70,18 @@ class MainScreenWidget(QWidget):
         self._runtime_message = ""
         self._add_in_progress = False
         self._add_task = None
+        # Идёт выдача лицензии по запросу из поиска: между первой проверкой и
+        # повторной проходит секунд десять, и всё это время список занят.
+        self._acquiring = False
         self._closing = False
+        # Названия, полученные из магазина: локальный каталог о новых играх
+        # не знает, и без этого строка в таблице показывала бы голый AppID.
+        self._store_names = {}
+        # Автоочистка во время сессии: флаг ставит MainWindow при старте буста, а
+        # счётчик хранит убранные успехи — статистика считает по таблице, и без
+        # него удалённые строки просто пропали бы из итогов сеанса.
+        self.auto_clean_during_boost = False
+        self.cleaned_successful = 0
         self._thread_pool = QThreadPool.globalInstance()
         self.max_scroll = 0
         # --- ЛОГОТИП НАД ПОИСКОМ ---
@@ -467,9 +494,20 @@ class MainScreenWidget(QWidget):
         if not self._ui_is_available():
             return
         status = self._display_status(status)
-        for game in self.games:
+        for index, game in enumerate(self.games):
             if isinstance(game, dict) and str(game.get('appid')) == str(appid):
                 game['status'] = status
+                # Автоочистка убирает игру сразу, а не в конце сессии: раньше список
+                # не менялся всю сессию, хотя настройка обещала обратное. Удаляем
+                # только из памяти — файл перезапишется один раз при завершении,
+                # иначе на библиотеке в тысячи игр вышла бы запись на каждую строку.
+                if self.auto_clean_during_boost and status.startswith('Готово'):
+                    del self.games[index]
+                    self.cleaned_successful += 1
+                    # Таблица показывает не self.games, а его отфильтрованную копию:
+                    # без этого строка уходила из памяти, но оставалась на экране
+                    # до конца сессии.
+                    self.game_table_model.remove_game(game)
                 break
         else:
             return
@@ -496,12 +534,21 @@ class MainScreenWidget(QWidget):
             return 'Ошибка'
         return value[:500] or 'Ожидание'
 
-    def set_all_status(self, status):
+    def set_all_status(self, status, preserve_results=False):
         """Ставит статус всем играм разом: один проход по памяти + одно сохранение + одна
-        перерисовка вместо N (иначе O(n) записей файла и перерисовок на GUI-потоке)."""
+        перерисовка вместо N (иначе O(n) записей файла и перерисовок на GUI-потоке).
+
+        preserve_results оставляет нетронутыми уже подведённые итоги. Нужен при
+        остановке: раньше «Остановка...» затирала и «Готово», после чего
+        finalize переписывал их в «Остановлено» — успешно отработавшие игры
+        пропадали и из автоочистки, и из статистики сессии.
+        """
         for g in self.games:
-            if isinstance(g, dict):
-                g['status'] = status
+            if not isinstance(g, dict):
+                continue
+            if preserve_results and str(g.get('status', '')).startswith(self.TERMINAL_STATUS_PREFIXES):
+                continue
+            g['status'] = status
         save_games(self.games)
         self.game_table_model.layoutChanged.emit()
         self.force_table_update_signal.emit()
@@ -510,7 +557,7 @@ class MainScreenWidget(QWidget):
         # «Ошибка» без двоеточия: статус стал коротким, а прежний префикс «Ошибка:»
         # перестал бы совпадать — и завершённая с ошибкой игра переписывалась бы
         # в «Не выполнено», теряя результат.
-        terminal_prefixes = ('Готово', 'Ошибка', 'Пропущено', 'Остановлено')
+        terminal_prefixes = self.TERMINAL_STATUS_PREFIXES
         fallback = 'Остановлено' if stopped else 'Не выполнено'
         for game in self.games:
             # isinstance-защита как и везде по коду: одна «грязная» запись в списке
@@ -576,6 +623,14 @@ class MainScreenWidget(QWidget):
                 exact_lookup = getattr(self.app_lookup, 'find_exact_appid', None)
                 appid = exact_lookup(text) if callable(exact_lookup) else self.app_lookup.find_appid(text)
                 if not appid:
+                    # Локальный каталог скачивается один раз и не обновляется:
+                    # игры, вышедшие позже, в нём отсутствуют навсегда. Спрашиваем
+                    # магазин напрямую, прежде чем сдаваться.
+                    from_store = search_store_exact(text)
+                    if from_store:
+                        appid, store_name = from_store
+                        self._store_names[str(appid)] = store_name
+                if not appid:
                     similar = self.app_lookup.find_similar(text, limit=3)
                     suggestions = ', '.join(
                         f"{item.get('name')} (AppID {item.get('appid')})" for item in similar
@@ -588,9 +643,17 @@ class MainScreenWidget(QWidget):
                 raise ValueError('Эта игра уже есть в списке.')
             if cancel_event.is_set():
                 return None
-            if not self.booster.check_game_owned(int(appid)):
-                raise ValueError('Эта игра не принадлежит вашему аккаунту Steam.')
-            return {'appid': appid, 'name': self.get_name_by_appid(appid)}
+            name = self.get_name_by_appid(appid)
+            if self.booster.check_game_owned(int(appid)):
+                return {'appid': appid, 'name': name}
+            # Игры нет на аккаунте — но, может, её отдают даром. Отказ здесь был
+            # окончательным, хотя половину раздач Steam можно забрать одним щелчком.
+            steps, reason = self._plan_free_acquisition(appid, name, cancel_event)
+            if steps:
+                # Имя спрашиваем заново: пока строился план, магазин мог сообщить
+                # настоящее название игры, которого нет в локальном каталоге.
+                return {'appid': appid, 'name': self.get_name_by_appid(appid), 'claim': steps}
+            raise ValueError(reason)
 
         task = BackgroundTask(resolve_game)
         task.signals.result.connect(self._on_game_resolved)
@@ -626,6 +689,48 @@ class MainScreenWidget(QWidget):
             except (TypeError, RuntimeError):
                 pass
 
+    def _plan_free_acquisition(self, appid, name, cancel_event):
+        """Можно ли получить игру даром. Возвращает (шаги выдачи, причина отказа).
+
+        Работает в фоновом потоке: ходит в магазин, а решение о самой выдаче
+        принимает уже интерфейс. Правило про базовую игру то же, что и у
+        автоматического забора: дополнение без неё бесполезно.
+        """
+        payload = free_games.fetch_details(appid)
+        # free_acquisition_for, а не поиск пакета: у free-to-play игр пакетов нет
+        # вовсе, и раньше они отвергались как платные.
+        package_id = free_games.find_free_package(payload, appid)
+        if package_id is None and free_games.is_free_to_play(payload, appid):
+            package_id = 0
+        if package_id is None:
+            return [], 'Этой игры нет на вашем аккаунте, и бесплатно её не отдают.'
+        if cancel_event.is_set():
+            return [], 'Проверка отменена.'
+        info = free_games.describe_app(payload, appid)
+        # Имя из магазина: при добавлении по AppID локальный каталог о новой игре
+        # ничего не знает, и в таблицу попал бы голый номер.
+        if info['name']:
+            self._store_names[str(appid)] = info['name']
+            name = info['name']
+        offer = free_games.FreeOffer(
+            appid=appid,
+            name=name,
+            package_id=package_id,
+            kind=info['kind'],
+            parent_appid=info['parent_appid'],
+            parent_name=info['parent_name'],
+        )
+        owned_parent = []
+        if offer.needs_parent and self.booster.check_game_owned(int(offer.parent_appid)):
+            owned_parent.append(offer.parent_appid)
+        # claimed_ids не передаём: человек попросил именно эту игру, и прошлая
+        # попытка (например, неудачная) не повод отказывать сейчас.
+        steps, skipped = free_games.plan_claims([offer], owned_appids=owned_parent)
+        if steps:
+            return steps, ''
+        reason = skipped[0][1] if skipped else 'получить не удалось'
+        return [], f'Эту позицию нельзя добавить: {reason}.'
+
     def _on_game_resolved(self, result):
         if not self._ui_is_available() or not result:
             return
@@ -634,10 +739,88 @@ class MainScreenWidget(QWidget):
         if not appid or any(str(game.get('appid')) == appid for game in self.games if isinstance(game, dict)):
             self._reject_add('Игра уже была добавлена, пока выполнялась проверка.')
             return
+        steps = result.get('claim')
+        if steps:
+            self._acquire_then_add(steps, appid, name)
+            return
+        self.add_game(appid, name)
+
+    def _acquire_then_add(self, steps, appid, name):
+        """Просит Steam выдать лицензии и добавляет игру, когда та появится."""
+        # Сразу после этого метода приходит finished первой проверки и снимал
+        # блокировку: кнопка «Запустить буст» оживала посреди выдачи, а начатый
+        # буст молча не давал добавить уже полученную игру. Флаг держит
+        # блокировку до запуска повторной проверки.
+        self._acquiring = True
+        self._set_add_busy(True)
+        # У free-to-play лицензия выдаётся только вместе с окном установки: своей
+        # ссылки «просто добавить в библиотеку» у Steam нет, а пакета, по которому
+        # её выдают обычным раздачам, у таких игр не существует. Предупреждаем, что
+        # окно — часть процесса, а не сбой: результат мы всё равно перепроверим.
+        if any(step.package_id == 0 for step in steps):
+            self.progress_bar.setFormat(
+                f'Получаем «{name}». Steam предложит установку — её можно отменить.'
+            )
+        else:
+            self.progress_bar.setFormat(f'Получаем «{name}» в Steam...')
+        self._claim_for_add(0, list(steps), appid, name)
+
+    def _claim_for_add(self, index, steps, appid, name):
+        # Ссылки отдаём по одной: базовая игра раньше своего дополнения.
+        if not self._ui_is_available():
+            return
+        if index >= len(steps):
+            QTimer.singleShot(
+                self.ACQUIRE_VERIFY_DELAY_MS,
+                lambda: self._verify_acquired_game(appid, name),
+            )
+            return
+        QDesktopServices.openUrl(QUrl(steps[index].claim_url))
+        QTimer.singleShot(
+            self.ACQUIRE_STEP_MS,
+            lambda: self._claim_for_add(index + 1, steps, appid, name),
+        )
+
+    def _verify_acquired_game(self, appid, name):
+        """Переспрашивает Steam и добавляет игру, только если она правда появилась."""
+        if not self._ui_is_available():
+            return
+        # Дальше блокировку держит сама задача проверки и снимет по её finished.
+        self._acquiring = False
+
+        def check(cancel_event, _progress):
+            del cancel_event
+            return bool(self.booster.check_game_owned(int(appid)))
+
+        task = BackgroundTask(check)
+        task.signals.result.connect(
+            lambda owned: self._on_acquired_checked(bool(owned), appid, name)
+        )
+        task.signals.error.connect(self._reject_add)
+        task.signals.finished.connect(self._on_add_finished)
+        self._add_task = task
+        self._thread_pool.start(task)
+
+    def _on_acquired_checked(self, owned, appid, name):
+        if not self._ui_is_available():
+            return
+        if not owned:
+            self._reject_add(
+                f'Steam не подтвердил выдачу «{name}». Проверьте, что клиент запущен, '
+                'и попробуйте ещё раз.'
+            )
+            return
+        # Отдельного сообщения об успехе нет намеренно: строку внизу тут же
+        # перезаписывает пересчёт времени, а о самой выдаче лицензии Steam
+        # сообщает своим окном. В таблице игра появляется — этого достаточно.
         self.add_game(appid, name)
 
     def _on_add_finished(self):
         if not self._ui_is_available():
+            return
+        if self._acquiring:
+            # Первая проверка закончилась, но выдача ещё идёт: не отпускаем список
+            # и не затираем подсказку про окно установки расчётом времени.
             return
         self._add_task = None
         self._add_in_progress = False
@@ -845,6 +1028,11 @@ class MainScreenWidget(QWidget):
 
     def get_name_by_appid(self, appid):
         appid_str = str(appid)
+        # Название из магазина главнее: локальный каталог не обновляется, и для
+        # недавно вышедшей игры он не знает даже имени.
+        stored = getattr(self, '_store_names', {}).get(appid_str)
+        if stored:
+            return stored
         lookup = getattr(self, 'app_lookup', None)
         if lookup is not None:
             get_name = getattr(lookup, 'get_name', None)

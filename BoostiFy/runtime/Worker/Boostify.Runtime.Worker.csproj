@@ -20,6 +20,12 @@
     <PlatformTarget>$(Platform)</PlatformTarget>
   </PropertyGroup>
 
+  <!-- Без отладочных символов в релизе: иначе в exe попадает полный путь к .pdb на машине сборки. -->
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)' == 'ReleaseNoConsole'">
     <OutputType>WinExe</OutputType>
     <AssemblyName>Boostify.Booster</AssemblyName>

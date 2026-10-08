@@ -4,6 +4,7 @@ from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QLabel, QLineEdit, QWidget
 
 from BoostiFy.GUI.utils.styles import LABEL_AS_BUTTON_STYLE
+from BoostiFy.GUI.widgets.context_menu import show_text_context_menu
 
 
 class EditableLabel(QWidget):
@@ -26,6 +27,10 @@ class EditableLabel(QWidget):
         self.edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.edit.setPlaceholderText(self.placeholder)
         self.edit.hide()
+        # Своё меню вместо стандартного: см. widgets/context_menu.py.
+        self._menu_open = False
+        self.edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.edit.customContextMenuRequested.connect(self._show_edit_menu)
         
         # Таймер для авто-снятия фокуса
         self.blur_timer = QTimer(self)
@@ -59,7 +64,25 @@ class EditableLabel(QWidget):
         self.edit.selectAll()
         self.blur_timer.start()
     
+    def _show_edit_menu(self, position):
+        """Показывает меню и удерживает поле открытым, пока оно на экране.
+
+        Меню забирает фокус, а на потерю фокуса поле само себя закрывает — без
+        этой защиты строка ввода пряталась в момент открытия меню, и «Вставить»
+        было уже некуда."""
+        self._menu_open = True
+        self.blur_timer.stop()
+        try:
+            show_text_context_menu(self.edit, position)
+        finally:
+            self._menu_open = False
+            if self.edit.isVisible():
+                self.edit.setFocus()
+                self.blur_timer.start()
+
     def finish_edit(self):
+        if self._menu_open:
+            return
         text = self.edit.text().strip()
         self.label.setText(text if text else self.placeholder)
         self.edit.hide()

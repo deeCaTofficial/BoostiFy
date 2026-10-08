@@ -69,6 +69,19 @@ class GameTableModel(QAbstractTableModel):
         self._games = games
         self.endResetModel()
 
+    def remove_game(self, game):
+        """Убирает строку с этой записью (по самому объекту, а не по appid).
+
+        Без сброса модели: прокрутка и выделение остаются на месте, а не прыгают
+        в начало при каждой завершённой игре."""
+        for row, item in enumerate(self._games):
+            if item is game:
+                self.beginRemoveRows(QModelIndex(), row, row)
+                del self._games[row]
+                self.endRemoveRows()
+                return True
+        return False
+
     def get_game(self, row):
         if 0 <= row < len(self._games):
             return self._games[row]

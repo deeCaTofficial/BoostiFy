@@ -35,6 +35,10 @@ elif os.name == "posix":
 
 # Столько AppID принимает за раз C#-сервер (MaximumBatchSize в OwnershipProtocol.cs).
 SERVER_BATCH_LIMIT = 500
+# Пауза между стартами соседних слотов при первом заполнении. Одна игра в секунду:
+# на максимуме в 60 слотов разгон занимает около минуты, зато Steam не получает всю
+# пачку разом. На последующие круги не влияет — там слоты уже вразнобой.
+SLOT_START_STAGGER_SEC = 1.0
 
 # Коды возврата воркера. Успех: 0 и 42.
 SUCCESS_EXIT_CODES = frozenset({0, 42})
@@ -351,7 +355,8 @@ class SteamBooster:
         return normalized
 
     @staticmethod
-    def _estimate_eta_seconds(slot_starts, queued_count, num_slots, task_seconds, now):
+    def _estimate_eta_seconds(slot_starts, queued_count, num_slots, task_seconds, now,
+                              idle_delays=()):
         """Остаток сессии по расписанию слотов, а не по «средней игре».
 
         Слот — это конвейер: он занят task_seconds на игру и берёт следующую только
@@ -359,12 +364,17 @@ class SteamBooster:
         а не 0.9 волны (прежняя формула len(appids)/num_slots занижала ETA на 10%
         при неполной волне и никогда не сходилась к нулю в конце).
 
-        Занятые слоты дают остаток по факту старта, свободные — ноль. Очередь
-        раскладываем жадно на самый ранний освобождающийся слот; ETA — момент,
-        когда освободится последний.
+        Занятые слоты дают остаток по факту старта, свободные — ноль, а ещё не
+        вступившие при разгоне — сколько им осталось ждать (idle_delays). Без
+        этого первую минуту на 60 слотах «Осталось» занижалось на ширину разгона.
+        Очередь раскладываем жадно на самый ранний освобождающийся слот; ETA —
+        момент, когда освободится последний.
         """
         finish_times = [max(0.0, start + task_seconds - now) for start in slot_starts]
-        finish_times.extend([0.0] * max(0, num_slots - len(finish_times)))
+        free_slots = max(0, num_slots - len(finish_times))
+        waits = [max(0.0, float(delay)) for delay in idle_delays][:free_slots]
+        finish_times.extend(waits)
+        finish_times.extend([0.0] * (free_slots - len(waits)))
         if not finish_times:
             return 0.0
         heapq.heapify(finish_times)
@@ -470,6 +480,13 @@ class SteamBooster:
 
         # --- БЛОК 2: ЛОГИКА ВОРКЕРА ---
         def slot_worker(slot_id):
+            # Первый заход разводим по времени. Потоки слотов создаются подряд без
+            # пауз, а «КД начала» — случайная задержка, которую все отсчитывают от
+            # одного момента: при 60 слотах Steam получал 60 подключений в окне
+            # шириной в этот КД, и steamwebhelper переставал отвечать. Дальше слоты
+            # расходятся сами: каждый занят своей игрой разное время.
+            if stop_event.wait((slot_id - 1) * SLOT_START_STAGGER_SEC):
+                return
             while not stop_event.is_set():
                 try:
                     appid = appid_queue.get_nowait()
@@ -575,6 +592,7 @@ class SteamBooster:
                     appid_queue.task_done()
 
         worker_threads = []
+        ramp_started = time.time()
         for index in range(num_slots):
             worker = threading.Thread(
                 target=slot_worker,
@@ -592,7 +610,15 @@ class SteamBooster:
                     now = time.time()
                     with self.games_done_lock:
                         games_done = self.games_done_count
-                        slot_starts = list(self._slot_started_at.values())
+                        busy_slots = dict(self._slot_started_at)
+                    slot_starts = list(busy_slots.values())
+                    # Свободный слот, до которого ещё не дошёл разгон, возьмётся за
+                    # игру не сейчас, а когда истечёт его задержка.
+                    idle_delays = [
+                        ramp_started + (slot_id - 1) * SLOT_START_STAGGER_SEC - now
+                        for slot_id in range(1, num_slots + 1)
+                        if slot_id not in busy_slots
+                    ]
 
                     # Очередь считаем по счётчикам, а не через queue.qsize(): между
                     # get_nowait() и регистрацией слота qsize уже упал, и ETA
@@ -600,7 +626,7 @@ class SteamBooster:
                     tasks_finished = games_done - skipped_count
                     queued = max(0, len(pending) - tasks_finished - len(slot_starts))
                     final_eta_sec = self._estimate_eta_seconds(
-                        slot_starts, queued, num_slots, expected_task_sec, now
+                        slot_starts, queued, num_slots, expected_task_sec, now, idle_delays
                     )
 
                     # Отправляем в GUI единый, уже посчитанный результат

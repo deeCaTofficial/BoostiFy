@@ -1,4 +1,4 @@
-from BoostiFy.core.booster import SteamBooster
+from BoostiFy.core.booster import SLOT_START_STAGGER_SEC, SteamBooster
 from BoostiFy.GUI.utils.helpers import estimate_boost_seconds
 
 # Задача слота: launch_cd -> игра (duration + finish_cd) -> slot_cd.
@@ -18,7 +18,9 @@ def test_prestart_estimate_matches_running_eta_at_start():
     slot = (60, 90)
     task = duration + 20 + 20 + 75  # средние кулдауны
     prestart = estimate_boost_seconds(games, slots, duration, launch, finish, slot)
-    running_at_start = SteamBooster._estimate_eta_seconds([], games, slots, task, now=0)
+    # На первом тике слоты ещё не вступили: каждый ждёт свой шаг разгона.
+    ramp = [index * SLOT_START_STAGGER_SEC for index in range(slots)]
+    running_at_start = SteamBooster._estimate_eta_seconds([], games, slots, task, 0, ramp)
     assert prestart == running_at_start
 
 
@@ -85,3 +87,18 @@ def test_eta_uses_the_latest_finishing_slot():
     # Слоты стартовали в разное время: ETA — по самому позднему.
     starts = [now - 7200, now - 60, now]
     assert eta(starts, queued=0, num_slots=3, now=now) == TASK
+
+
+def test_ramp_delay_of_waiting_slots_counts_toward_eta():
+    """Пока идёт разгон, свободный слот возьмётся за игру не сразу.
+
+    Без учёта задержки первую минуту на 60 слотах «Осталось» занижалось на
+    ширину разгона: слот, которому ещё ждать 59 секунд, считался свободным.
+    """
+    now = 1000.0
+    # 3 игры, 3 слота, второй вступит через 1 с, третий через 2 с.
+    assert SteamBooster._estimate_eta_seconds([], 3, 3, TASK, now, [0, 1, 2]) == TASK + 2
+    # Задержки, которые уже истекли, ничего не добавляют.
+    assert SteamBooster._estimate_eta_seconds([], 3, 3, TASK, now, [-5, -4, -3]) == TASK
+    # Игр меньше, чем слотов: поздние слоты так и не понадобятся.
+    assert SteamBooster._estimate_eta_seconds([], 2, 60, TASK, now, range(60)) == TASK + 1

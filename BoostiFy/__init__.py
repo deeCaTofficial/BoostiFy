@@ -6,5 +6,5 @@ __company__ = "CLC corporation"
 # BoostiFy.version_info.txt внутрь сборки не попадают. С ней сверяется проверка
 # обновлений, поэтому расхождение здесь не косметическое — устаревшее значение
 # заставило бы программу вечно предлагать обновиться. Сходство всех трёх мест
-# стережёт tests/test_version.py.
-__version__ = "1.1.2"
+# стережёт tests/test_updates.py::test_declared_versions_agree.
+__version__ = "1.1.3"

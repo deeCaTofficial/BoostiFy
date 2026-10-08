@@ -252,9 +252,16 @@ class UpdateDialog(_BaseDraggableDialog):
         self.btn_skip.setStyleSheet(BUTTON_STYLE)
         self._layout_buttons()
 
+        # «Пропустить» отличаем от простого закрытия: Esc и крестик тоже дают
+        # reject, и раньше любое закрытие окна навсегда глушило эту версию.
+        self.skipped = False
         self.btn_download.clicked.connect(self.accept)
-        self.btn_skip.clicked.connect(self.reject)
+        self.btn_skip.clicked.connect(self._skip)
         self.setFixedSize(self.WIDTH, self.HEIGHT)
+
+    def _skip(self):
+        self.skipped = True
+        self.reject()
 
     def _layout_buttons(self):
         font = QFont(FONT_FAMILY)

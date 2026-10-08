@@ -1,5 +1,6 @@
 # main_window.py — точка входа для BoostiFy GUI
 
+import time
 from pathlib import Path
 
 from PyQt6 import sip
@@ -7,6 +8,7 @@ from PyQt6.QtCore import Qt, QThreadPool, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QMainWindow, QStackedWidget
 
+from BoostiFy.core import free_games
 from BoostiFy.core.booster import normalize_appids
 from BoostiFy.core.runtime_paths import missing_runtime_files, runtime_is_ready
 from BoostiFy.core.updates import check_for_update, remember_skipped_version
@@ -39,6 +41,20 @@ class MainWindow(QMainWindow):
     # Задержка перед проверкой обновлений: окно успевает отрисоваться и стать
     # отзывчивым до того, как программа полезет в сеть.
     UPDATE_CHECK_DELAY_MS = 1500
+
+    # Как часто во время буста перепроверять раздачи. Сессия может идти часами, а
+    # раздачи появляются в произвольный момент — но чаще получаса смысла нет:
+    # столько же живёт сама акция, а магазин не стоит дёргать почём зря.
+    FREE_GAMES_INTERVAL_MS = 30 * 60 * 1000
+    # Таймер только напоминает проверить, пора ли; сам интервал считается от
+    # последнего прохода. Иначе каждый круг циклического буста перезапускал
+    # отсчёт и сразу ходил в магазин — при круге в минуту это сотня запросов в
+    # минуту, а у магазина лимит порядка 200 за пять.
+    FREE_GAMES_TICK_MS = 60 * 1000
+    # Пауза между запросами к Steam-клиенту, чтобы он не получил всё разом.
+    FREE_GAMES_CLAIM_STEP_MS = 1500
+    # Сколько ждать, прежде чем спросить у Steam, появились ли лицензии.
+    FREE_GAMES_VERIFY_DELAY_MS = 8000
 
     def __init__(self):
         super().__init__()
@@ -141,6 +157,16 @@ class MainWindow(QMainWindow):
         self._update_task = None
         QTimer.singleShot(self.UPDATE_CHECK_DELAY_MS, self.check_for_update_async)
 
+        self._free_games_task = None
+        self._claim_verify_task = None
+        self._free_games_last_run = None
+        # Последний посчитанный план выдачи: по нему функциональный прогон
+        # проверяет порядок и состав, не дожидаясь всех пауз между запросами.
+        self._last_free_games_steps = []
+        self._free_games_timer = QTimer(self)
+        self._free_games_timer.setInterval(self.FREE_GAMES_TICK_MS)
+        self._free_games_timer.timeout.connect(self._maybe_claim_free_games)
+
     def check_for_update_async(self):
         """Спрашивает у GitHub последний релиз в фоне.
 
@@ -166,9 +192,10 @@ class MainWindow(QMainWindow):
         dialog = UpdateDialog(self, update.version, update.current)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             QDesktopServices.openUrl(QUrl(update.url))
-        else:
+        elif getattr(dialog, 'skipped', False):
             # «Пропустить» — значит про эту версию больше не напоминать. О следующей
             # напомним: в файле лежит конкретный номер, а не флаг «не беспокоить».
+            # Окно, закрытое крестиком или Esc, — не ответ: спросим при следующем запуске.
             remember_skipped_version(update.version)
 
     def show_main(self):
@@ -222,14 +249,18 @@ class MainWindow(QMainWindow):
     def handle_del_game(self):
         self.main_screen.remove_selected_game()
 
-    def handle_start_boost(self):
+    def handle_start_boost(self, loop_restart=False):
         if self.main_screen.is_boosting:
             return
+        # Слежение за раздачами переживает круги цикла и гасится, только если
+        # новая сессия так и не стартовала — ниже это любой ранний выход.
         self._refresh_runtime_state()
         if not runtime_is_ready():
+            self.stop_free_games_watch()
             InfoDialog(self, self._runtime_error_message()).exec()
             return
         if self.booster.is_busy:
+            self.stop_free_games_watch()
             InfoDialog(self, 'Предыдущая сессия ещё завершает процессы. Подождите несколько секунд.').exec()
             return
         # Нормализуем тем же отбором, что применит booster: иначе дубликаты и мусорные
@@ -239,9 +270,12 @@ class MainWindow(QMainWindow):
             g.get('appid') for g in self.main_screen.games if isinstance(g, dict)
         )
         if not appids:
+            self.stop_free_games_watch()
             InfoDialog(self, 'Список игр пуст. Сначала добавьте хотя бы одну игру.').exec()
             return
-        if self.unlock_achievements:
+        # Согласие на разблокировку уже дано при запуске цикла. Спрашивать на
+        # каждом круге значило останавливать цикл, пока человека нет рядом.
+        if self.unlock_achievements and not loop_restart:
             confirm = CustomConfirmDialog(
                 self,
                 'Разблокировка достижений изменяет данные Steam.\n'
@@ -262,6 +296,11 @@ class MainWindow(QMainWindow):
                 self.main_screen.set_game_status_signal.emit(str(event_type), str(data))
 
         self.main_screen.set_all_status('В очереди')
+        # Автоочистка работает по ходу сессии, а не только в конце.
+        self.main_screen.cleaned_successful = 0
+        self.main_screen.auto_clean_during_boost = bool(
+            self.config.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table'])
+        )
         self.main_screen.set_boost_controls(True)
         try:
             statistics_session_id = start_statistics_session(len(appids))
@@ -281,6 +320,7 @@ class MainWindow(QMainWindow):
                 slot_cd_range=self.slot_cd_range
             )
         except Exception as e:
+            self.stop_free_games_watch()
             if statistics_session_id:
                 try:
                     discard_statistics_session(statistics_session_id)
@@ -291,6 +331,9 @@ class MainWindow(QMainWindow):
             self.main_screen.set_all_status('Ошибка запуска')
             self.main_screen.set_boost_controls(False)
             InfoDialog(self, f"Не удалось запустить буст: {e}").exec()
+        else:
+            # Только после удачного старта: раздачи ищутся, пока идёт сессия.
+            self.start_free_games_watch()
 
 
     def handle_stop_boost(self):
@@ -298,19 +341,40 @@ class MainWindow(QMainWindow):
             return
         self._stop_requested = True
         self.main_screen.set_boost_controls(True, stopping=True)
-        self.main_screen.set_all_status('Остановка...')
+        # preserve_results: то, что уже отработало, остаётся «Готово». Без этого
+        # остановка стирала результаты, и автоочистка с статистикой видели пустоту.
+        self.main_screen.set_all_status('Остановка...', preserve_results=True)
         if not self.booster.stop_boost():
             self.main_screen.boost_finished_signal.emit()
 
     def _on_boost_finished(self):
+        self.main_screen.auto_clean_during_boost = False
         self.main_screen.finalize_session_statuses(stopped=self._stop_requested)
+        # Считаем до автоочистки: она уберёт из таблицы как раз успешные строки.
+        successful = self._session_counts()['successful']
         self._finish_statistics_session(stopped=self._stop_requested)
         if self.config.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table']):
             self._auto_clean_finished_games()
         # Проверка зацикливания больше не за `return` авточистки: раньше эти две
         # настройки молча конфликтовали и включённая авточистка глушила цикл.
-        if self.loop_boost and not self._stop_requested and self.main_screen.games:
-            QTimer.singleShot(1000, self.handle_start_boost)
+        loop_again = bool(self.loop_boost and not self._stop_requested and self.main_screen.games)
+        if loop_again and not successful:
+            # Круг без единого успеха — это сбой среды (чаще всего Steam закрыт), а
+            # не невезение. Раньше цикл крутился так вечно: каждая игра падала за
+            # секунды, круг начинался заново, и в статистику, журнал сбоев и
+            # магазин (поиск раздач) уходило по запросу на каждый круг.
+            loop_again = False
+            InfoDialog(
+                self,
+                'Цикл остановлен: за круг ни одна игра не отработала успешно.\n'
+                'Проверьте, что Steam запущен. Подробности — в журнале сбоев.',
+            ).exec()
+        if loop_again:
+            # Слежение за раздачами не гасим: оно живёт весь цикл, а не один круг,
+            # иначе каждый круг обрывал бы поиск на середине.
+            QTimer.singleShot(1000, lambda: self.handle_start_boost(loop_restart=True))
+        else:
+            self.stop_free_games_watch()
 
     def _auto_clean_finished_games(self):
         """Убирает из таблицы только успешно обработанные игры.
@@ -333,12 +397,20 @@ class MainWindow(QMainWindow):
         self.main_screen.update_time_label()
         self.main_screen.set_boost_controls(False)
 
+    def _session_counts(self):
+        """Итоги сеанса: статусы таблицы плюс игры, убранные автоочисткой."""
+        counts = classify_game_statuses(self.main_screen.games)
+        # Игры, убранные автоочисткой по ходу сессии, в таблице уже не лежат —
+        # без этого успешный сеанс отчитывался бы нулём.
+        counts['successful'] += max(0, int(getattr(self.main_screen, 'cleaned_successful', 0)))
+        return counts
+
     def _finish_statistics_session(self, *, stopped, interrupted=False):
         session_id = self._stats_session_id
         if not session_id:
             return False
         self._stats_session_id = None
-        counts = classify_game_statuses(self.main_screen.games)
+        counts = self._session_counts()
         try:
             saved = finish_statistics_session(
                 session_id,
@@ -355,6 +427,186 @@ class MainWindow(QMainWindow):
         if callable(refresh):
             refresh()
         return saved
+
+    # ------------------------- Раздачи Steam -------------------------
+
+    def _free_games_enabled(self) -> bool:
+        return bool(self.config.get(
+            'auto_claim_free_games', DEFAULT_CONFIG['auto_claim_free_games']
+        ))
+
+    def start_free_games_watch(self):
+        """Запускает слежение за раздачами на время сессии буста."""
+        if not self._free_games_enabled():
+            return
+        if not self._free_games_timer.isActive():
+            self._free_games_timer.start()
+        self._maybe_claim_free_games()
+
+    def _maybe_claim_free_games(self):
+        """Проход, только если с прошлого истёк интервал."""
+        last = self._free_games_last_run
+        if last is not None and time.monotonic() - last < self.FREE_GAMES_INTERVAL_MS / 1000:
+            return
+        self.claim_free_games_async()
+
+    @staticmethod
+    def _drop_task(task):
+        """Отменяет фоновую задачу и рвёт связь её сигналов с окном."""
+        if task is None:
+            return
+        task.cancel()
+        try:
+            task.signals.result.disconnect()
+            task.signals.error.disconnect()
+            task.signals.finished.disconnect()
+        except TypeError:
+            pass  # сигналы уже отсоединены
+
+    def stop_free_games_watch(self):
+        self._free_games_timer.stop()
+        task = self._free_games_task
+        self._free_games_task = None
+        self._drop_task(task)
+
+    def claim_free_games_async(self):
+        """Ищет, что можно забрать даром, и готовит очередь выдачи.
+
+        Два источника: раздачи в магазине прямо сейчас и бесплатные дополнения к
+        играм, которые уже есть в библиотеке. Всё в фоне — магазин отвечает не
+        мгновенно, а вызывают нас посреди буста.
+        """
+        if self._closing or self._free_games_task is not None:
+            return
+        booster = self.booster
+        library = [
+            str(game.get('appid')) for game in self.main_screen.games
+            if isinstance(game, dict) and game.get('appid')
+        ]
+
+        def work(cancel_event, progress):
+            del progress
+            claimed = free_games.load_claimed()
+            offers = free_games.fetch_offers()
+            if cancel_event.is_set():
+                return []
+
+            # Дополнения к своим играм: за один заход обходим кусок библиотеки и
+            # запоминаем место — полный обход тысяч игр занял бы часы.
+            candidates = []
+            if library:
+                chunk, next_position = free_games.next_scan_slice(library)
+                candidates, _ = free_games.scan_owned_for_free_dlc(chunk)
+                free_games.remember_scan_position(next_position)
+            if cancel_event.is_set():
+                return []
+
+            probe = {offer.appid for offer in offers}
+            probe |= {offer.parent_appid for offer in offers if offer.parent_appid}
+            probe |= {candidate[0] for candidate in candidates}
+            probe |= {candidate[2] for candidate in candidates}
+            owned = set()
+            try:
+                owned = set(booster.check_games_owned_batch(sorted(probe)))
+            except Exception as error:
+                # Проверка владения — необязательный фильтр: без неё Steam просто
+                # скажет, что позиция уже есть. Ронять из-за этого поиск нельзя.
+                print(f'Раздачи: не удалось проверить владение — {error}')
+
+            fresh = [c for c in candidates if c[0] not in owned]
+            dlc_offers = free_games.resolve_dlc_offers(fresh, claimed)
+            steps, skipped = free_games.plan_claims(list(offers) + dlc_offers, owned, claimed)
+            for offer, reason in skipped:
+                print(f'Раздачи: свёрнуто «{offer.name}» — {reason}')
+            return steps
+
+        task = BackgroundTask(work)
+        task.signals.result.connect(self._on_free_games_found)
+        task.signals.error.connect(lambda message: print(f'Раздачи: {message}'))
+        task.signals.finished.connect(self._on_free_games_task_finished)
+        self._free_games_task = task
+        self._free_games_last_run = time.monotonic()
+        QThreadPool.globalInstance().start(task)
+
+    def _on_free_games_task_finished(self):
+        self._free_games_task = None
+
+    def _on_free_games_found(self, steps):
+        self._last_free_games_steps = list(steps or [])
+        if not steps or self._closing or sip.isdeleted(self):
+            return
+        # Забранным пакет считается только после подтверждения Steam. Раньше его
+        # запоминали заранее, и раздача, сорванная закрытым Steam или выходом из
+        # программы посреди очереди, не повторялась уже никогда.
+        self._claim_next_free_game(0, list(steps))
+
+    def _claim_next_free_game(self, index, steps):
+        """Отдаёт ссылки Steam-клиенту по одной, с паузой между ними.
+
+        Порядок важен: базовая игра идёт перед своим дополнением, иначе Steam
+        примет лицензию на дополнение, открывать которое будет нечем.
+        """
+        if self._closing or sip.isdeleted(self):
+            return
+        if index >= len(steps):
+            QTimer.singleShot(
+                self.FREE_GAMES_VERIFY_DELAY_MS,
+                lambda: self._verify_claimed_free_games(steps),
+            )
+            return
+        step = steps[index]
+        # Попытку считаем в момент запроса: раздачу, которую Steam раз за разом
+        # не выдаёт (регион, закончилась), после нескольких попыток оставляем.
+        free_games.remember_attempt(step.package_id)
+        QDesktopServices.openUrl(QUrl(step.claim_url))
+        QTimer.singleShot(
+            self.FREE_GAMES_CLAIM_STEP_MS,
+            lambda: self._claim_next_free_game(index + 1, steps),
+        )
+
+    def _verify_claimed_free_games(self, steps):
+        """Спрашивает у Steam, появились ли лицензии.
+
+        Ссылка steam:// ничего не возвращает, поэтому единственный честный способ
+        сказать «получилось» — переспросить проверкой владения, которая и так есть.
+        В фоне: запрос к Steam ждёт ответа до 30 секунд (и ещё до 10 на запуск
+        проверки), и всё это время окно стояло бы замёрзшим посреди буста.
+        """
+        if self._closing or sip.isdeleted(self) or not steps:
+            return
+        booster = self.booster
+        appids = [step.appid for step in steps]
+        task = BackgroundTask(
+            lambda cancel_event, progress: set(booster.check_games_owned_batch(appids))
+        )
+        task.signals.result.connect(lambda owned: self._on_claims_verified(steps, owned))
+        task.signals.error.connect(
+            lambda message: print(f'Раздачи: не удалось подтвердить выдачу — {message}')
+        )
+        task.signals.finished.connect(self._on_claim_verify_finished)
+        self._claim_verify_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_claim_verify_finished(self):
+        self._claim_verify_task = None
+
+    def _on_claims_verified(self, steps, owned):
+        if self._closing or sip.isdeleted(self):
+            return
+        owned = {str(appid) for appid in owned or ()}
+        added = [step for step in steps if str(step.appid) in owned]
+        free_games.remember_claimed(step.package_id for step in added)
+        if not added:
+            return
+        shown = added[:6]
+        # Базовую игру помечаем: её забрали не саму по себе, а ради дополнения.
+        names = '\n'.join(
+            f'• {step.name}' + (' (базовая игра)' if step.reason == 'parent' else '')
+            for step in shown
+        )
+        if len(added) > len(shown):
+            names += f'\n… и ещё {len(added) - len(shown)}'
+        InfoDialog(self, f'Забрано бесплатно: {len(added)}\n\n{names}').exec()
 
     def _runtime_error_message(self):
         missing = ', '.join(path.name for path in missing_runtime_files())
@@ -375,18 +627,14 @@ class MainWindow(QMainWindow):
         """Этот метод вызывается при закрытии окна."""
         self._stop_requested = True
         self._closing = True
+        self.stop_free_games_watch()
         # Запрос к GitHub может висеть до истечения таймаута уже после закрытия окна.
         # Отменяем задачу и рвём связь сигналов: иначе результат дойдёт до
         # уничтоженных виджетов и выход упадёт на «wrapped C/C++ object deleted».
-        if self._update_task is not None:
-            self._update_task.cancel()
-            try:
-                self._update_task.signals.result.disconnect()
-                self._update_task.signals.error.disconnect()
-                self._update_task.signals.finished.disconnect()
-            except TypeError:
-                pass  # сигналы уже отсоединены
-            self._update_task = None
+        # То же с проверкой выдачи раздач: она ждёт ответа Steam до 30 секунд.
+        for name in ('_update_task', '_claim_verify_task'):
+            self._drop_task(getattr(self, name))
+            setattr(self, name, None)
         # Оба экрана гасят свои фоновые задачи и отвязывают их сигналы: иначе
         # запоздавший колбэк доходил до уже уничтоженных виджетов и ронял выход
         # с «wrapped C/C++ object has been deleted».

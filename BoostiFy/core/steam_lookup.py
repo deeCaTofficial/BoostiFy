@@ -2,6 +2,9 @@ import gzip
 import json
 import os
 import threading
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -10,6 +13,47 @@ from BoostiFy.core import app_paths
 from BoostiFy.core.app_paths import replace_with_retry
 
 STEAM_APPLIST_URL = "https://raw.githubusercontent.com/dgibbs64/SteamCMD-AppID-List/master/steamcmd_appid.json"
+# Официальный поиск магазина. Нужен потому, что каталог выше скачивается один раз
+# и дальше лежит на диске без обновления: игра, вышедшая после первой загрузки,
+# по названию не находится вообще никогда.
+STORE_SEARCH_URL = "https://store.steampowered.com/api/storesearch/"
+# Возраст каталога, после которого «Добавить все игры» скачивает его заново.
+# Неделя: каталог весит десятки мегабайт, а новинок за день немного.
+CATALOG_MAX_AGE_SEC = 7 * 24 * 3600
+
+
+def search_store_exact(name, timeout=15):
+    """Точное совпадение по названию через магазин Steam: (appid, имя) или None.
+
+    Спрашиваем магазин, а не локальный каталог: он всегда актуален. Берём только
+    полное совпадение имени — частичное уводило бы не туда (на «Half-Life»
+    магазин первым отдаёт «Half-Life 2»).
+    """
+    query = _normalize_name(name)
+    folded = _fold_name(name)
+    if not query:
+        return None
+    params = urllib.parse.urlencode({"term": name, "cc": "us", "l": "english"})
+    try:
+        request = urllib.request.Request(
+            f"{STORE_SEARCH_URL}?{params}", headers={"User-Agent": "BoostiFy"}
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        appid = item.get("id")
+        title = str(item.get("name") or "")
+        if not isinstance(appid, int):
+            continue
+        if _normalize_name(title) == query or (folded and _fold_name(title) == folded):
+            return appid, title
+    return None
 
 
 def default_cache_file() -> Path:
@@ -42,15 +86,33 @@ class SteamAppLookup:
         self.apps = cached or []
         self._rebuild_index()
 
-    def ensure_loaded(self) -> bool:
-        if self.apps:
+    def ensure_loaded(self, max_age=None) -> bool:
+        """Каталог в памяти; max_age (секунды) заодно обновляет устаревший.
+
+        Без max_age каталог, скачанный однажды, жил на диске вечно, и игры,
+        вышедшие позже, «Добавить все игры» не видела никогда: она проверяет
+        владение ровно по этому списку. Не удалось обновить — работаем со старым.
+        """
+        if self.apps and not self._is_stale(max_age):
             return True
         with self._load_lock:
-            if self.apps:
+            if self.apps and not self._is_stale(max_age):
                 return True
-            self.apps = self.fetch_applist()
-            self._rebuild_index()
+            fresh = self.fetch_applist()
+            if fresh:
+                self.apps = fresh
+                self._rebuild_index()
         return bool(self.apps)
+
+    def _is_stale(self, max_age) -> bool:
+        if max_age is None:
+            return False
+        try:
+            age = time.time() - self.cache_file.stat().st_mtime
+        except OSError:
+            # Файла нет, а каталог в памяти есть (подан напрямую) — освежать нечего.
+            return False
+        return age > max_age
 
     def _rebuild_index(self):
         # Нормализуем имена ОДИН раз: точный индекс имя->appid, обратный appid->name,

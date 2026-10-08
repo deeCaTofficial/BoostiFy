@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QDialog, QLabel, QProgressBar, QPushButton, QStacked
 
 from BoostiFy.core.booster import SteamBooster, reset_result_lists
 from BoostiFy.core.runtime_paths import BACKGROUND_WORKER
-from BoostiFy.core.steam_lookup import SteamAppLookup
+from BoostiFy.core.steam_lookup import CATALOG_MAX_AGE_SEC, SteamAppLookup
 from BoostiFy.GUI.core.async_tasks import BackgroundTask
 from BoostiFy.GUI.core.game_storage import (
     CD_BOUNDS,
@@ -154,6 +154,13 @@ class SettingsScreenWidget(QWidget):
         self.loop_boost_btn.setGeometry(303, 150, 287, 45)
         self.loop_boost_btn.setCheckable(True)
         self.loop_boost_btn.setStyleSheet(TOGGLE_BUTTON_STYLE)
+        # Раздачи забираются во время буста, а не по нажатию: экран настроек на
+        # время сессии закрыт, поэтому нажать что-либо здесь тогда нельзя. Это
+        # переключатель поведения сессии — как два соседних над ним.
+        self.free_games_btn = QPushButton("Авто забор раздач", page_boost)
+        self.free_games_btn.setGeometry(0, 225, 590, 45)
+        self.free_games_btn.setCheckable(True)
+        self.free_games_btn.setStyleSheet(TOGGLE_BUTTON_STYLE)
         for w in page_boost.findChildren(QPushButton):
             if not w.isCheckable():
                 w.setStyleSheet(BUTTON_STYLE)
@@ -267,6 +274,7 @@ class SettingsScreenWidget(QWidget):
         self._pending_loop_boost = DEFAULT_CONFIG['loop_boost']
         self._pending_table_rows = DEFAULT_CONFIG['table_visible_rows']
         self._pending_auto_clean_table = DEFAULT_CONFIG['auto_clean_table']
+        self._pending_auto_claim_free = DEFAULT_CONFIG['auto_claim_free_games']
         self._pending_launch_cd_from = DEFAULT_CONFIG['launch_cd_from']
         self._pending_launch_cd_to = DEFAULT_CONFIG['launch_cd_to']
         self._pending_finish_cd_from = DEFAULT_CONFIG['finish_cd_from']
@@ -285,6 +293,7 @@ class SettingsScreenWidget(QWidget):
         self.table_rows_increment_btn.clicked.connect(self._pending_increment_table_rows)
         self.table_rows_decrement_btn.clicked.connect(self._pending_decrement_table_rows)
         self.auto_clean_btn.clicked.connect(self._pending_toggle_auto_clean)
+        self.free_games_btn.clicked.connect(self._pending_toggle_free_games)
 
         self.btn_cd1_from_minus.clicked.connect(lambda: self._adjust_cd('launch_from', -1))
         self.btn_cd1_from_plus.clicked.connect(lambda: self._adjust_cd('launch_from', 1))
@@ -348,6 +357,8 @@ class SettingsScreenWidget(QWidget):
         self.table_rows_value_label.setText(str(self._pending_table_rows))
         self._pending_auto_clean_table = config.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table'])
         self.auto_clean_btn.setChecked(self._pending_auto_clean_table)
+        self._pending_auto_claim_free = config.get('auto_claim_free_games', DEFAULT_CONFIG['auto_claim_free_games'])
+        self.free_games_btn.setChecked(self._pending_auto_claim_free)
         self._pending_launch_cd_from = config.get('launch_cd_from', DEFAULT_CONFIG['launch_cd_from'])
         self._pending_launch_cd_to = config.get('launch_cd_to', DEFAULT_CONFIG['launch_cd_to'])
         self._pending_finish_cd_from = config.get('finish_cd_from', DEFAULT_CONFIG['finish_cd_from'])
@@ -377,6 +388,7 @@ class SettingsScreenWidget(QWidget):
             'loop_boost': self._pending_loop_boost,
             'table_visible_rows': self._pending_table_rows,
             'auto_clean_table': self._pending_auto_clean_table,
+            'auto_claim_free_games': self._pending_auto_claim_free,
             'launch_cd_from': self._pending_launch_cd_from,
             'launch_cd_to': self._pending_launch_cd_to,
             'finish_cd_from': self._pending_finish_cd_from,
@@ -505,6 +517,10 @@ class SettingsScreenWidget(QWidget):
             self._pending_table_rows -= 1
             self.table_rows_value_label.setText(str(self._pending_table_rows))
             self._save_extra_settings()
+
+    def _pending_toggle_free_games(self):
+        self._pending_auto_claim_free = self.free_games_btn.isChecked()
+        self._save_extra_settings()
 
     def _pending_toggle_auto_clean(self):
         enabled = self.auto_clean_btn.isChecked()
@@ -753,6 +769,7 @@ class SettingsScreenWidget(QWidget):
             'loop_boost': self._pending_loop_boost,
             'table_visible_rows': self._pending_table_rows,
             'auto_clean_table': self._pending_auto_clean_table,
+            'auto_claim_free_games': self._pending_auto_claim_free,
             'launch_cd_from': self._pending_launch_cd_from,
             'launch_cd_to': self._pending_launch_cd_to,
             'finish_cd_from': self._pending_finish_cd_from,
@@ -822,6 +839,8 @@ class SettingsScreenWidget(QWidget):
         self.table_rows_value_label.setText(str(self._pending_table_rows))
         self._pending_auto_clean_table = data.get('auto_clean_table', DEFAULT_CONFIG['auto_clean_table'])
         self.auto_clean_btn.setChecked(self._pending_auto_clean_table)
+        self._pending_auto_claim_free = data.get('auto_claim_free_games', DEFAULT_CONFIG['auto_claim_free_games'])
+        self.free_games_btn.setChecked(self._pending_auto_claim_free)
         self._pending_launch_cd_from = data.get('launch_cd_from', DEFAULT_CONFIG['launch_cd_from'])
         self._pending_launch_cd_to = data.get('launch_cd_to', DEFAULT_CONFIG['launch_cd_to'])
         self._pending_finish_cd_from = data.get('finish_cd_from', DEFAULT_CONFIG['finish_cd_from'])
@@ -866,7 +885,9 @@ class SettingsScreenWidget(QWidget):
 
         def collect_owned(cancel_event, emit_progress):
             lookup = SteamAppLookup(allow_fetch=False)
-            if not lookup.ensure_loaded():
+            # Каталог старше недели скачиваем заново: проверка владения идёт ровно
+            # по нему, и вышедшие позже игры иначе не добавлялись бы никогда.
+            if not lookup.ensure_loaded(max_age=CATALOG_MAX_AGE_SEC):
                 raise RuntimeError('Не удалось загрузить каталог Steam. Проверьте интернет.')
             apps = [app for app in lookup.apps if isinstance(app, dict) and app.get('appid')]
             if not apps:
@@ -937,6 +958,19 @@ class SettingsScreenWidget(QWidget):
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat(f'Готово. Добавлено игр: {added}.')
         InfoDialog(self, f'Добавлено игр: {added}.').exec()
+        # Библиотека только что обновилась — самый подходящий момент поискать,
+        # что к ней можно добавить даром. Ищем после диалога, чтобы не мешать
+        # человеку читать итог добавления.
+        self._request_free_games_check()
+
+    def _request_free_games_check(self):
+        """Просит главное окно поискать раздачи, если это включено в настройках."""
+        window = getattr(self, 'main_window', None) or self.window()
+        check = getattr(window, 'claim_free_games_async', None)
+        enabled = getattr(window, '_free_games_enabled', None)
+        if not callable(check) or not callable(enabled) or not enabled():
+            return
+        check()
 
     def _on_add_all_error(self, message):
         if not self._ui_is_available():

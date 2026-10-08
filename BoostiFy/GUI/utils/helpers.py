@@ -1,5 +1,7 @@
 # helpers.py — вспомогательные функции для BoostiFy GUI
 
+from BoostiFy.core.booster import SLOT_START_STAGGER_SEC, SteamBooster
+
 
 def _range_average(cooldown_range):
     try:
@@ -22,14 +24,16 @@ def estimate_boost_seconds(count, batch, duration, launch_cd, finish_cd, slot_cd
     batch = max(1, int(batch or 1))
     if count == 0:
         return 0.0
-    num_batches = (count + batch - 1) // batch
     expected_task_sec = (
         max(0.0, float(duration or 0))
         + _range_average(launch_cd)
         + _range_average(finish_cd)
         + _range_average(slot_cd)
     )
-    return num_batches * expected_task_sec
+    # Тот же расчёт, что и на первом тике буста, вместе с разгоном слотов: слот N
+    # вступает через (N-1) шагов, и без этого числа расходились на ширину разгона.
+    ramp = [index * SLOT_START_STAGGER_SEC for index in range(batch)]
+    return SteamBooster._estimate_eta_seconds([], count, batch, expected_task_sec, 0.0, ramp)
 
 
 def format_time_verbose(total_seconds):
