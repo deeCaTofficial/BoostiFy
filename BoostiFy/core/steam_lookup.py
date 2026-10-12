@@ -73,18 +73,71 @@ def _normalize_name(name: str) -> str:
 def _fold_name(name: str) -> str:
     """Ключ без пунктуации и пробелов: 'Counter-Strike' и 'Counter Strike' -> 'counterstrike'.
     Позволяет находить игру, когда пользователь ввёл иначе расставленные дефисы/пробелы."""
-    return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+    return "".join(filter(str.isalnum, str(name or "").lower()))
 
 
 class SteamAppLookup:
-    def __init__(self, allow_fetch: bool = True, cache_file=None, initial_apps=None):
+    def __init__(self, allow_fetch: bool = True, cache_file=None, initial_apps=None, lazy=False):
+        """lazy=True откладывает чтение кэша до первого обращения (или warm_up()).
+
+        Каталог — это ~165 тыс. игр: чтение и индексация занимают около секунды и
+        ~100 МБ памяти. Окно делало это прямо в конструкторе, в потоке интерфейса,
+        и появлялось на секунду позже, «замирая» на это время."""
         self._load_lock = threading.Lock()
         self.cache_file = Path(cache_file) if cache_file is not None else default_cache_file()
-        cached = self._normalize_apps_payload(initial_apps) if initial_apps is not None else self.load_cache()
-        if cached is None and allow_fetch:
+        self._allow_fetch = allow_fetch
+        self.apps = []
+        self._rebuild_index()
+        self._loaded = False
+        if initial_apps is not None:
+            self.apps = self._normalize_apps_payload(initial_apps)
+            self._rebuild_index()
+            self._loaded = True
+        elif not lazy:
+            self._load_initial()
+
+    def _load_initial(self):
+        cached = self.load_cache()
+        if cached is None and self._allow_fetch:
             cached = self.fetch_applist()
+        elif cached:
+            self._compact_old_cache(cached)
         self.apps = cached or []
         self._rebuild_index()
+        self._loaded = True
+
+    def _compact_old_cache(self, apps):
+        """Кэш старого формата (с отступами, ~17 МБ) один раз переписываем
+        компактно (~9 МБ). Дату файла сохраняем: по ней решается, когда
+        каталог пора скачивать заново."""
+        try:
+            with self.cache_file.open("rb") as f:
+                head = f.read(16).removeprefix(b"\xef\xbb\xbf")
+            if not head.startswith((b"[\n", b"[\r\n")):
+                return
+            stat = self.cache_file.stat()
+        except OSError:
+            return
+        self._write_cache(apps)
+        try:
+            os.utime(self.cache_file, (stat.st_atime, stat.st_mtime))
+        except OSError:
+            pass
+
+    def warm_up(self):
+        """Загружает отложенный каталог; безопасно звать из любого потока и не раз."""
+        if self._loaded:
+            return
+        with self._load_lock:
+            if not self._loaded:
+                self._load_initial()
+
+    def clear(self):
+        """Забыть каталог в памяти (после удаления его кэша с диска)."""
+        with self._load_lock:
+            self.apps = []
+            self._rebuild_index()
+            self._loaded = True
 
     def ensure_loaded(self, max_age=None) -> bool:
         """Каталог в памяти; max_age (секунды) заодно обновляет устаревший.
@@ -93,6 +146,7 @@ class SteamAppLookup:
         вышедшие позже, «Добавить все игры» не видела никогда: она проверяет
         владение ровно по этому списку. Не удалось обновить — работаем со старым.
         """
+        self.warm_up()
         if self.apps and not self._is_stale(max_age):
             return True
         with self._load_lock:
@@ -118,10 +172,12 @@ class SteamAppLookup:
         # Нормализуем имена ОДИН раз: точный индекс имя->appid, обратный appid->name,
         # и список пред-нормализованных имён для подстрочного поиска — чтобы не
         # нормализовать ~200k имён заново на каждый вызов find_appid/find_similar.
-        self._exact_index = {}
-        self._folded_index = {}
-        self._appid_index = {}
-        self._normalized = []
+        # Индексы собираются в локальных переменных и подменяются разом: поиск из
+        # фонового потока не застанет их наполовину построенными.
+        exact_index = {}
+        folded_index = {}
+        appid_index = {}
+        normalized = []
         for app in self.apps:
             if not isinstance(app, dict):
                 continue
@@ -129,18 +185,31 @@ class SteamAppLookup:
             if appid is None:
                 continue
             raw_name = app.get("name") or ""
-            self._appid_index[str(appid)] = raw_name
+            # Ключ — число, а не str(appid): это ~165 тыс. лишних строк (~8 МБ).
+            try:
+                appid_index[int(appid)] = raw_name
+            except (TypeError, ValueError):
+                pass
             norm = _normalize_name(raw_name)
             if norm:
-                self._exact_index.setdefault(norm, appid)
-                self._normalized.append((norm, appid, app))
+                exact_index.setdefault(norm, appid)
+                normalized.append((norm, appid, app))
             folded = _fold_name(raw_name)
             if folded:
-                self._folded_index.setdefault(folded, appid)
+                folded_index.setdefault(folded, appid)
+        self._exact_index = exact_index
+        self._folded_index = folded_index
+        self._appid_index = appid_index
+        self._normalized = normalized
 
     def get_name(self, appid) -> str | None:
         """Имя игры по appid за O(1) (обратный индекс), либо None."""
-        return self._appid_index.get(str(appid)) or None
+        self.warm_up()
+        try:
+            key = int(str(appid))
+        except (TypeError, ValueError):
+            return None
+        return self._appid_index.get(key) or None
 
     def fetch_applist(self):
         # stdlib вместо requests: единственный HTTP-вызов в проекте не стоит зависимости.
@@ -170,6 +239,7 @@ class SteamAppLookup:
         return apps or None
 
     def find_appid(self, name: str) -> int | None:
+        self.warm_up()
         exact = self.find_exact_appid(name)
         if exact is not None:
             return exact
@@ -186,6 +256,7 @@ class SteamAppLookup:
 
     def find_exact_appid(self, name: str) -> int | None:
         """Resolve only an unambiguous exact name, including punctuation folding."""
+        self.warm_up()
         query = _normalize_name(name)
         if not query:
             return None
@@ -196,6 +267,7 @@ class SteamAppLookup:
         return self._folded_index.get(folded) if folded else None
 
     def find_similar(self, name: str, limit: int = 5) -> list[dict]:
+        self.warm_up()
         query = _normalize_name(name)
         if not query:
             return []
@@ -232,8 +304,11 @@ class SteamAppLookup:
             f"{self.cache_file.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
         )
         try:
+            # Без отступов и без поля status (его заново ставит
+            # _normalize_apps_payload при чтении): с indent=2 каталог весил ~17 МБ.
+            compact = [{"appid": app["appid"], "name": app["name"]} for app in apps]
             with temp_file.open("w", encoding="utf-8") as f:
-                json.dump(apps, f, ensure_ascii=False, indent=2)
+                json.dump(compact, f, ensure_ascii=False, separators=(",", ":"))
             replace_with_retry(temp_file, self.cache_file)
         except OSError as e:
             print(f"Не удалось обновить кеш Steam AppID: {e}")

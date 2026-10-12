@@ -98,6 +98,36 @@ def test_fresh_catalog_is_not_downloaded_again(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_old_indented_cache_is_compacted_once_keeping_its_date(tmp_path):
+    """Кэш с отступами весил вдвое больше; его дата решает, когда обновлять каталог."""
+    import json
+    import os
+
+    cache = tmp_path / "games_upload.json"
+    apps = [{"appid": 10, "name": "Counter-Strike", "status": "Готово"},
+            {"appid": 4212480, "name": "Новая игра", "status": "Готово"}]
+    cache.write_text(json.dumps(apps, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.utime(cache, (1_000_000, 1_000_000))
+    old_size = cache.stat().st_size
+
+    lookup = SteamAppLookup(allow_fetch=False, cache_file=cache)
+    assert lookup.get_name(4212480) == "Новая игра"
+    assert cache.stat().st_size < old_size
+    assert cache.stat().st_mtime == 1_000_000
+    assert json.loads(cache.read_text(encoding="utf-8")) == [
+        {"appid": 10, "name": "Counter-Strike"}, {"appid": 4212480, "name": "Новая игра"}]
+    assert SteamAppLookup(allow_fetch=False, cache_file=cache).find_exact_appid("Counter Strike") == 10
+
+
+def test_lazy_lookup_reads_the_cache_only_when_used(tmp_path):
+    lookup = _cached_lookup(tmp_path, 60)
+    lazy = SteamAppLookup(allow_fetch=False, cache_file=lookup.cache_file, lazy=True)
+    assert lazy.apps == []
+    assert lazy.get_name("10") == "Counter-Strike"
+    lazy.clear()
+    assert lazy.get_name(10) is None
+
+
 def test_failed_refresh_keeps_the_old_catalog(tmp_path, monkeypatch):
     lookup = _cached_lookup(tmp_path, 10 ** 7)
     monkeypatch.setattr(lookup, "fetch_applist", list)

@@ -187,7 +187,12 @@ class MainScreenWidget(QWidget):
         self._table_update_pending = False  # Флаг для защиты от частых обновлений
         self.update_game_list()
         QTimer.singleShot(200, lambda: self.force_table_update())
-        self.app_lookup = SteamAppLookup(allow_fetch=False)
+        # Каталог (~165 тыс. игр) читается уже после показа окна и в фоне: раньше
+        # это стоило секунды «замершего» окна при каждом запуске.
+        self.app_lookup = SteamAppLookup(allow_fetch=False, lazy=True)
+        QTimer.singleShot(
+            0, lambda: self._thread_pool.start(BackgroundTask(lambda _cancel, _progress: self.app_lookup.warm_up()))
+        )
         self.booster = SteamBooster(str(BACKGROUND_WORKER))
         self.is_boosting = False
         self.set_boost_controls(False)
@@ -487,9 +492,6 @@ class MainScreenWidget(QWidget):
             self.game_table.show()
             self.update()
             self.repaint()
-    def set_game_status(self, appid, status):
-        self.set_game_status_signal.emit(str(appid), str(status))
-
     def _set_game_status_slot(self, appid, status):
         if not self._ui_is_available():
             return

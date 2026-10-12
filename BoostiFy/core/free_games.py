@@ -28,7 +28,6 @@ CLAIM_URL_TEMPLATE = "steam://subscriptioninstall/{package_id}"
 # Free-to-play отдаётся без пакета: у таких игр package_groups пуст, и лицензию
 # добавляет сам клиент по appid — это и делает кнопка «Добавить в библиотеку».
 FREE_APP_URL_TEMPLATE = "steam://install/{appid}"
-STORE_PAGE = "https://store.steampowered.com/search/?maxprice=free&specials=1&ndl=1"
 
 REQUEST_TIMEOUT = 20
 # Пауза между запросами к магазину: у него лимит порядка 200 запросов за 5 минут.

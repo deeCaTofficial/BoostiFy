@@ -42,9 +42,6 @@ class SettingsScreenWidget(QWidget):
     # Сигнал совместим с MainWindow.apply_settings_from_ui
     settings_changed = pyqtSignal(int, int, bool, bool, int)
 
-    def set_toast_callback(self, callback):
-        self._toast_callback = callback
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background-color: transparent;")
@@ -704,10 +701,11 @@ class SettingsScreenWidget(QWidget):
         main_screen = getattr(self.window(), 'main_screen', None)
         lookup = getattr(main_screen, 'app_lookup', None)
         if lookup is not None:
-            lookup.apps = []
-            rebuild_index = getattr(lookup, '_rebuild_index', None)
-            if callable(rebuild_index):
-                rebuild_index()
+            clear = getattr(lookup, 'clear', None)
+            if callable(clear):
+                clear()
+            else:
+                lookup.apps = []
         # Итог показываем строкой в полосе состояния, а не отдельным окном: действие
         # пользователь уже подтвердил, и второе модальное окно требовало лишнего клика
         # ради сведений, которые ему ничего не дают (вплоть до имён служебных файлов).
@@ -1034,32 +1032,6 @@ class SettingsScreenWidget(QWidget):
         self._runtime_message = str(message or '')
         if self._add_all_task is None:
             self.btn_add_all_games.setEnabled(self._runtime_available)
-
-    def _extract_steam_apps(self, data):
-        if isinstance(data, dict):
-            apps = data.get('applist', {}).get('apps', [])
-        elif isinstance(data, list):
-            apps = data
-        else:
-            apps = []
-
-        normalized = []
-        seen = set()
-        for app in apps:
-            if not isinstance(app, dict) or 'appid' not in app:
-                continue
-            try:
-                appid = int(app.get('appid'))
-            except (TypeError, ValueError):
-                continue
-            if appid <= 0 or appid in seen:
-                continue
-            seen.add(appid)
-            normalized.append({
-                'appid': appid,
-                'name': str(app.get('name') or appid),
-            })
-        return normalized
 
     def _format_eta(self, eta_sec: int) -> str:
         if eta_sec > 604800:

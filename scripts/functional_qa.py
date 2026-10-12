@@ -50,6 +50,9 @@ class FakeLookup:
     def ensure_loaded(self, max_age=None):
         return True
 
+    def warm_up(self):
+        pass
+
     def find_appid(self, name):
         query = " ".join(str(name).strip().lower().split())
         for app in self.apps:

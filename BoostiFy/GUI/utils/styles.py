@@ -55,13 +55,6 @@ NAV_BUTTON_STYLE = BUTTON_STYLE + f"""
     }}
 """
 
-LABEL_STYLE = f"""
-    color: {TEXT_COLOR};
-    font-family: '{FONT_FAMILY}';
-    font-size: {FONT_SIZE}px;
-    font-weight: 400;
-    background-color: transparent;
-"""
 
 LABEL_AS_BUTTON_STYLE = f"""
     color: {TEXT_COLOR};

@@ -45,22 +45,5 @@ namespace Boostify.Runtime.Steam.Schemas
         {
             return Value == null ? fallback : Convert.ToString(Value, CultureInfo.InvariantCulture);
         }
-
-        public int AsInt32(int fallback = 0)
-        {
-            if (Value == null)
-            {
-                return fallback;
-            }
-
-            try
-            {
-                return Convert.ToInt32(Value, CultureInfo.InvariantCulture);
-            }
-            catch (Exception)
-            {
-                return fallback;
-            }
-        }
     }
 }

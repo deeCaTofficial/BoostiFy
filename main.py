@@ -10,7 +10,8 @@ from BoostiFy.GUI.core.game_storage import ensure_storage_ready
 
 
 class RotatingLogSink:
-    def __init__(self, path, max_bytes=5 * 1024 * 1024, backups=3):
+    # Одна копия: три держали на диске до 20 МБ ради старых записей.
+    def __init__(self, path, max_bytes=5 * 1024 * 1024, backups=1):
         self.path = path
         self.max_bytes = max_bytes
         self.backups = backups
@@ -25,6 +26,12 @@ class RotatingLogSink:
         if current_size + len(text.encode("utf-8", errors="replace")) <= self.max_bytes:
             return
         self._stream.close()
+        # Копии сверх лимита (от прежних версий, где их было три) удаляем.
+        for index in range(self.backups + 1, 4):
+            try:
+                self.path.with_name(f"{self.path.name}.{index}").unlink(missing_ok=True)
+            except OSError:
+                pass
         for index in range(self.backups, 0, -1):
             source = self.path.with_name(self.path.name if index == 1 else f"{self.path.name}.{index - 1}")
             target = self.path.with_name(f"{self.path.name}.{index}")

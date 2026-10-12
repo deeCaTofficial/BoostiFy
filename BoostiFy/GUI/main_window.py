@@ -64,7 +64,9 @@ class MainWindow(QMainWindow):
 
         # Устанавливаем иконку приложения (панель задач / Alt-Tab)
         try:
-            icon_path = PROJECT_ROOT / "BoostiFy" / "Assets" / "BoostiFyLogo.png"
+            # .ico, а не BoostiFyLogo.png: в нём готовы все размеры 16–256, а PNG
+            # на 2048 px добавлял к сборке ~1 МБ ради картинки размером со значок.
+            icon_path = PROJECT_ROOT / "BoostiFy" / "runtime" / "Worker" / "boostify.ico"
             if icon_path.exists():
                 self.setWindowIcon(QIcon(str(icon_path)))
         except Exception:

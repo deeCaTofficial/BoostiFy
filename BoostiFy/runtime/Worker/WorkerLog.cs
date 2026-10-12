@@ -96,20 +96,22 @@ namespace Boostify.Runtime.Worker
             {
                 return;
             }
-            for (var index = 3; index >= 1; index--)
+            // Одной копии хватает для разбора: три держали на диске до 20 МБ на лог.
+            // Копии .2/.3 от прежних версий удаляем, иначе они лежали бы вечно.
+            for (var index = 2; index <= 3; index++)
             {
-                var source = index == 1 ? path : $"{path}.{index - 1}";
-                var target = $"{path}.{index}";
-                if (!File.Exists(source))
+                var stale = $"{path}.{index}";
+                if (File.Exists(stale))
                 {
-                    continue;
+                    File.Delete(stale);
                 }
-                if (File.Exists(target))
-                {
-                    File.Delete(target);
-                }
-                File.Move(source, target);
             }
+            var backup = $"{path}.1";
+            if (File.Exists(backup))
+            {
+                File.Delete(backup);
+            }
+            File.Move(path, backup);
         }
     }
 }

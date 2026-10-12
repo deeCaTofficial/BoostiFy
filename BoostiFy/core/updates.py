@@ -9,7 +9,6 @@
 import json
 import os
 import re
-import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -149,17 +148,3 @@ def check_for_update(current_version=__version__, timeout=REQUEST_TIMEOUT, respe
     if respect_skip and load_skipped_version() == tag:
         return None
     return UpdateInfo(version=tag, url=url, current=str(current_version))
-
-
-def check_in_background(callback, current_version=__version__):
-    """Проверка в отдельном потоке для случаев без Qt (например, CLI-скриптов).
-
-    В GUI используется BackgroundTask: он умеет отменяться и доставляет результат
-    сигналом в поток интерфейса.
-    """
-    def worker():
-        callback(check_for_update(current_version=current_version))
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    return thread
